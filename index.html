@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Saga</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1a2e; }
+  #scene { position: fixed; inset: 0; display: block; }
+
+  /* Health UI — top left, Zelda-style row of hearts */
+  #hearts {
+    position: fixed;
+    top: 22px;
+    left: 24px;
+    display: flex;
+    gap: 8px;
+    z-index: 10;
+    pointer-events: none;
+    filter: drop-shadow(0 2px 6px rgba(0,0,0,0.5));
+  }
+  .heart-slot {
+    position: relative;
+    width: 34px;
+    height: 34px;
+  }
+  .heart-slot canvas { width: 34px; height: 34px; display: block; }
+
+  /* Hint text */
+  #hint {
+    position: fixed;
+    bottom: 20px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    color: rgba(255,255,255,0.55);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    letter-spacing: 0.04em;
+    z-index: 10;
+    pointer-events: none;
+    transition: opacity 1.2s ease;
+  }
+
+  /* Donation counter */
+  #count {
+    position: fixed;
+    top: 26px;
+    right: 26px;
+    color: rgba(255,255,255,0.6);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    letter-spacing: 0.08em;
+    z-index: 10;
+    pointer-events: none;
+  }
+
+  /* Start overlay */
+  #start {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: #1a1a2e;
+    color: #fff;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    text-align: center;
+    cursor: pointer;
+    transition: opacity 1.4s ease;
+  }
+  #start h1 {
+    font-size: 44px;
+    font-weight: 300;
+    letter-spacing: 0.3em;
+    margin-bottom: 28px;
+    padding-left: 0.3em;
+  }
+  #start p {
+    max-width: 460px;
+    line-height: 1.7;
+    font-size: 16px;
+    font-weight: 300;
+    color: rgba(255,255,255,0.7);
+    margin-bottom: 38px;
+    padding: 0 24px;
+  }
+  #start .go {
+    font-size: 14px;
+    letter-spacing: 0.18em;
+    color: rgba(255,255,255,0.45);
+    text-transform: uppercase;
+    border: 1px solid rgba(255,255,255,0.25);
+    padding: 14px 30px;
+    border-radius: 2px;
+  }
+
+  /* Win overlay */
+  #win {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10,10,22,0.0);
+    color: #fff;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    text-align: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: background 3s ease, opacity 3s ease;
+    padding: 0 28px;
+  }
+  #win.show {
+    background: rgba(10,10,22,0.92);
+    opacity: 1;
+  }
+  #win .line1 {
+    font-size: 40px;
+    font-weight: 300;
+    letter-spacing: 0.06em;
+    margin-bottom: 30px;
+  }
+  #win .line2 {
+    font-size: 18px;
+    font-weight: 300;
+    line-height: 1.6;
+    color: rgba(255,255,255,0.72);
+    max-width: 520px;
+  }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <div id="hearts"></div>
+  <div id="count"></div>
+  <div id="hint">WASD för att gå &nbsp;·&nbsp; dra musen för att vrida kameran</div>
+
+  <div id="start">
+    <h1>SAGA</h1>
+    <p>Saga är liten och har ett medfött hjärtfel. Hon börjar svag — ett halvt hjärta, långsam och bräcklig. Hjälp henne genom världen och samla in donationer. Varje hjärta gör henne starkare.</p>
+    <div class="go">Klicka för att börja</div>
+  </div>
+
+  <div id="win">
+    <div class="line1">Saga är stark nu.</div>
+    <div class="line2">Hjärtfel drabbar 1 av 100 barn födda i Sverige.</div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+  (function () {
+    "use strict";
+
+    // ----------------------------------------------------------------------
+    // Constants
+    // ----------------------------------------------------------------------
+    const MAX_HEALTH = 5;          // 5 hearts
+    const START_HEALTH = 0.5;      // half a heart
+    const HEART_VALUE = 0.5;       // each donation = half a heart
+    const TOTAL_HEARTS = 8;        // donation hearts in world
+    const WORLD_SIZE = 90;         // half-extent of playable area
+    const COLLECT_RADIUS = 2.2;
+
+    // ----------------------------------------------------------------------
+    // State
+    // ----------------------------------------------------------------------
+    let health = START_HEALTH;
+    let collected = 0;
+    let started = false;
+    let won = false;
+    const keys = {};
+
+    // ----------------------------------------------------------------------
+    // Renderer / Scene / Camera
+    // ----------------------------------------------------------------------
+    const canvas = document.getElementById("scene");
+    const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    const SKY = 0x1a1a2e;
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(SKY);
+    scene.fog = new THREE.Fog(SKY, 35, 105);
+
+    const camera = new THREE.PerspectiveCamera(
+      55, window.innerWidth / window.innerHeight, 0.1, 400
+    );
+
+    // ----------------------------------------------------------------------
+    // Lights
+    // ----------------------------------------------------------------------
+    const ambient = new THREE.AmbientLight(0x404a66, 0.85); // low ambient
+    scene.add(ambient);
+
+    const dir = new THREE.DirectionalLight(0xbfc8ff, 0.9);  // from above-left
+    dir.position.set(-40, 60, 30);
+    dir.castShadow = true;
+    dir.shadow.mapSize.set(2048, 2048);
+    dir.shadow.camera.near = 1;
+    dir.shadow.camera.far = 200;
+    dir.shadow.camera.left = -120;
+    dir.shadow.camera.right = 120;
+    dir.shadow.camera.top = 120;
+    dir.shadow.camera.bottom = -120;
+    scene.add(dir);
+
+    // a faint cool fill from the opposite side
+    const fill = new THREE.DirectionalLight(0x2a2a55, 0.4);
+    fill.position.set(30, 20, -40);
+    scene.add(fill);
+
+    // ----------------------------------------------------------------------
+    // Ground — grass plane
+    // ----------------------------------------------------------------------
+    const groundGeo = new THREE.PlaneGeometry(WORLD_SIZE * 3, WORLD_SIZE * 3, 1, 1);
+    const groundMat = new THREE.MeshStandardMaterial({
+      color: 0x2f4538, roughness: 1.0, metalness: 0.0
+    });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // subtle darker grass patches for texture-feel (no external images)
+    for (let i = 0; i < 40; i++) {
+      const r = 3 + Math.random() * 8;
+      const patchGeo = new THREE.CircleGeometry(r, 6);
+      const patchMat = new THREE.MeshStandardMaterial({
+        color: 0x283a30, roughness: 1.0,
+        transparent: true, opacity: 0.5
+      });
+      const patch = new THREE.Mesh(patchGeo, patchMat);
+      patch.rotation.x = -Math.PI / 2;
+      patch.position.set(
+        (Math.random() - 0.5) * WORLD_SIZE * 2,
+        0.01,
+        (Math.random() - 0.5) * WORLD_SIZE * 2
+      );
+      scene.add(patch);
+    }
+
+    // ----------------------------------------------------------------------
+    // Obstacles — low-poly trees and rocks
+    // ----------------------------------------------------------------------
+    const obstacles = []; // {pos, radius}
+
+    function makeTree(x, z) {
+      const g = new THREE.Group();
+      const trunkH = 2.4 + Math.random() * 1.2;
+      const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.35, 0.5, trunkH, 6),
+        new THREE.MeshStandardMaterial({ color: 0x3a2a22, roughness: 1 })
+      );
+      trunk.position.y = trunkH / 2;
+      trunk.castShadow = true;
+      g.add(trunk);
+
+      const layers = 3;
+      for (let i = 0; i < layers; i++) {
+        const r = 2.4 - i * 0.55;
+        const cone = new THREE.Mesh(
+          new THREE.ConeGeometry(r, 2.0, 7),
+          new THREE.MeshStandardMaterial({ color: 0x274736, roughness: 1 })
+        );
+        cone.position.y = trunkH + i * 1.2;
+        cone.castShadow = true;
+        g.add(cone);
+      }
+      g.position.set(x, 0, z);
+      scene.add(g);
+      obstacles.push({ x: x, z: z, radius: 1.4 });
+    }
+
+    function makeRock(x, z) {
+      const s = 0.9 + Math.random() * 1.6;
+      const rock = new THREE.Mesh(
+        new THREE.DodecahedronGeometry(s, 0),
+        new THREE.MeshStandardMaterial({ color: 0x4a4a55, roughness: 1, flatShading: true })
+      );
+      rock.position.set(x, s * 0.5, z);
+      rock.rotation.set(Math.random(), Math.random(), Math.random());
+      rock.castShadow = true;
+      rock.receiveShadow = true;
+      scene.add(rock);
+      obstacles.push({ x: x, z: z, radius: s * 0.9 });
+    }
+
+    // place a handful of landmarks (kept clear of the centre where Saga spawns)
+    const landmarkSpots = [
+      [-22, -14, "tree"], [18, -26, "tree"], [34, 10, "tree"],
+      [-30, 22, "tree"], [8, 32, "tree"], [-12, -34, "tree"],
+      [26, 28, "rock"], [-38, -6, "rock"], [14, 6, "rock"], [-6, 24, "rock"]
+    ];
+    landmarkSpots.forEach(function (s) {
+      if (s[2] === "tree") makeTree(s[0], s[1]);
+      else makeRock(s[0], s[1]);
+    });
+
+    // ----------------------------------------------------------------------
+    // Saga — low-poly girl built from primitives
+    // ----------------------------------------------------------------------
+    const saga = new THREE.Group();
+    const skin = new THREE.MeshStandardMaterial({ color: 0xf0c9a8, roughness: 0.9 });
+    const dressMat = new THREE.MeshStandardMaterial({ color: 0xc25b7c, roughness: 0.85 });
+    const hairMat = new THREE.MeshStandardMaterial({ color: 0x3a2417, roughness: 0.9 });
+    const legMat = new THREE.MeshStandardMaterial({ color: 0xe8e0e8, roughness: 0.9 });
+
+    // legs (animated)
+    const legGeo = new THREE.BoxGeometry(0.22, 0.7, 0.22);
+    const legL = new THREE.Mesh(legGeo, legMat);
+    const legR = new THREE.Mesh(legGeo, legMat);
+    legL.position.set(-0.16, 0.35, 0);
+    legR.position.set(0.16, 0.35, 0);
+    legL.castShadow = legR.castShadow = true;
+    saga.add(legL, legR);
+
+    // dress (cone skirt + torso)
+    const skirt = new THREE.Mesh(new THREE.ConeGeometry(0.6, 0.95, 8), dressMat);
+    skirt.position.y = 1.0;
+    skirt.castShadow = true;
+    saga.add(skirt);
+
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.55, 0.34), dressMat);
+    torso.position.y = 1.45;
+    torso.castShadow = true;
+    saga.add(torso);
+
+    // arms (animated)
+    const armGeo = new THREE.BoxGeometry(0.16, 0.55, 0.16);
+    const armL = new THREE.Mesh(armGeo, skin);
+    const armR = new THREE.Mesh(armGeo, skin);
+    armL.position.set(-0.34, 1.5, 0);
+    armR.position.set(0.34, 1.5, 0);
+    armL.castShadow = armR.castShadow = true;
+    saga.add(armL, armR);
+
+    // head
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.32, 16, 16), skin);
+    head.position.y = 1.95;
+    head.castShadow = true;
+    saga.add(head);
+
+    // hair — cap + two side bunches
+    const hairCap = new THREE.Mesh(new THREE.SphereGeometry(0.35, 16, 16, 0, Math.PI * 2, 0, Math.PI * 0.62), hairMat);
+    hairCap.position.y = 2.0;
+    hairCap.castShadow = true;
+    saga.add(hairCap);
+    const bunGeo = new THREE.SphereGeometry(0.16, 10, 10);
+    const bunL = new THREE.Mesh(bunGeo, hairMat);
+    const bunR = new THREE.Mesh(bunGeo, hairMat);
+    bunL.position.set(-0.34, 1.92, -0.02);
+    bunR.position.set(0.34, 1.92, -0.02);
+    saga.add(bunL, bunR);
+
+    saga.position.set(0, 0, 0);
+    scene.add(saga);
+
+    // a small soft glow under Saga so she reads against the dark ground
+    const sagaGlow = new THREE.PointLight(0xffd0e0, 0.4, 6);
+    sagaGlow.position.set(0, 1.2, 0);
+    saga.add(sagaGlow);
+
+    // ----------------------------------------------------------------------
+    // Donation hearts
+    // ----------------------------------------------------------------------
+    const donationHearts = [];
+
+    function makeHeartShape() {
+      const s = new THREE.Shape();
+      const x = 0, y = 0;
+      s.moveTo(x, y + 0.5);
+      s.bezierCurveTo(x, y + 0.5, x - 0.5, y + 1.1, x - 1.0, y + 0.5);
+      s.bezierCurveTo(x - 1.5, y - 0.1, x - 0.5, y - 0.7, x, y - 1.0);
+      s.bezierCurveTo(x + 0.5, y - 0.7, x + 1.5, y - 0.1, x + 1.0, y + 0.5);
+      s.bezierCurveTo(x + 0.5, y + 1.1, x, y + 0.5, x, y + 0.5);
+      return s;
+    }
+
+    const heartGeo = new THREE.ExtrudeGeometry(makeHeartShape(), {
+      depth: 0.4, bevelEnabled: true, bevelThickness: 0.1,
+      bevelSize: 0.12, bevelSegments: 2, steps: 1
+    });
+    heartGeo.center();
+    heartGeo.scale(0.5, 0.5, 0.5);
+
+    const heartSpots = [
+      [-20, -28], [30, -18], [40, 18], [-34, 30],
+      [12, 40], [-44, -22], [22, 14], [-16, 8]
+    ];
+    heartSpots.forEach(function (p) {
+      const g = new THREE.Group();
+      const mesh = new THREE.Mesh(
+        heartGeo,
+        new THREE.MeshStandardMaterial({
+          color: 0xff5e87, emissive: 0xff3366,
+          emissiveIntensity: 0.6, roughness: 0.4, metalness: 0.1
+        })
+      );
+      mesh.castShadow = true;
+      g.add(mesh);
+
+      const glow = new THREE.PointLight(0xff5e87, 1.4, 9);
+      glow.position.set(0, 0, 0);
+      g.add(glow);
+
+      g.position.set(p[0], 1.6, p[1]);
+      g.userData = { collected: false, baseY: 1.6, phase: Math.random() * Math.PI * 2 };
+      scene.add(g);
+      donationHearts.push(g);
+    });
+
+    // ----------------------------------------------------------------------
+    // Camera control
+    // ----------------------------------------------------------------------
+    let camAzimuth = Math.PI;     // around Saga
+    const camPitch = 0.42;        // fixed-ish elevation
+    let camDist = 9;
+    let dragging = false;
+
+    canvas.addEventListener("mousedown", function () { dragging = true; });
+    window.addEventListener("mouseup", function () { dragging = false; });
+    window.addEventListener("mousemove", function (e) {
+      const locked = document.pointerLockElement === canvas;
+      if (locked || dragging) {
+        camAzimuth -= e.movementX * 0.0035;
+      }
+    });
+
+    // ----------------------------------------------------------------------
+    // Audio — Web Audio API
+    // ----------------------------------------------------------------------
+    let actx = null;
+    let masterGain = null;
+    let heartbeatTimer = null;
+    let ambientNodes = null;
+
+    function initAudio() {
+      if (actx) return;
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+      masterGain = actx.createGain();
+      masterGain.gain.value = 0.9;
+      masterGain.connect(actx.destination);
+      scheduleHeartbeat();
+    }
+
+    // hospital-monitor beep
+    function beep() {
+      if (!actx) return;
+      const t = actx.currentTime;
+      const osc = actx.createOscillator();
+      const g = actx.createGain();
+      osc.type = "square";
+      osc.frequency.value = 880;
+
+      // volume softens as health rises (1.0 at 0.5hp -> ~0.3 near 4hp)
+      const hp = Math.min(health, 4);
+      const vol = 0.16 * (1 - (hp - 0.5) / 3.5 * 0.72);
+
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(vol, t + 0.005);
+      g.gain.linearRampToValueAtTime(vol, t + 0.06);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+
+      osc.connect(g);
+      g.connect(masterGain);
+      osc.start(t);
+      osc.stop(t + 0.14);
+    }
+
+    function scheduleHeartbeat() {
+      if (heartbeatTimer) clearTimeout(heartbeatTimer);
+      // Above 4 hearts: beeping stops, ambient takes over.
+      if (health >= 4) {
+        startAmbient();
+        return;
+      }
+      stopAmbient();
+      beep();
+      // interval slows as health rises: 0.6s at 0.5hp -> ~1.5s near 4hp
+      const frac = (health - 0.5) / 3.5;            // 0..1
+      const interval = 0.6 + frac * 0.95;           // seconds
+      heartbeatTimer = setTimeout(scheduleHeartbeat, interval * 1000);
+    }
+
+    // gentle ascending ambient loop for the healthy state
+    function startAmbient() {
+      if (!actx || ambientNodes) return;
+      const notes = [261.6, 329.6, 392.0, 523.3]; // C E G C — rising
+      const out = actx.createGain();
+      out.gain.value = 0.0;
+      out.gain.linearRampToValueAtTime(0.06, actx.currentTime + 2.5);
+      out.connect(masterGain);
+
+      const oscs = notes.map(function (f, i) {
+        const o = actx.createOscillator();
+        const g = actx.createGain();
+        o.type = "sine";
+        o.frequency.value = f;
+        // slow shimmering swell, staggered per note
+        const lfo = actx.createOscillator();
+        const lfoG = actx.createGain();
+        lfo.type = "sine";
+        lfo.frequency.value = 0.08 + i * 0.015;
+        lfoG.gain.value = 0.5;
+        lfo.connect(lfoG);
+        lfoG.connect(g.gain);
+        g.gain.value = 0.5;
+        o.connect(g);
+        g.connect(out);
+        o.start();
+        lfo.start();
+        return { o: o, lfo: lfo };
+      });
+      ambientNodes = { out: out, oscs: oscs };
+    }
+
+    function stopAmbient() {
+      if (!ambientNodes) return;
+      const a = ambientNodes;
+      ambientNodes = null;
+      const t = actx.currentTime;
+      a.out.gain.cancelScheduledValues(t);
+      a.out.gain.setValueAtTime(a.out.gain.value, t);
+      a.out.gain.linearRampToValueAtTime(0, t + 0.6);
+      a.oscs.forEach(function (n) {
+        n.o.stop(t + 0.7);
+        n.lfo.stop(t + 0.7);
+      });
+    }
+
+    // collect chime — two quick ascending tones
+    function chime() {
+      if (!actx) return;
+      const t = actx.currentTime;
+      [0, 1].forEach(function (i) {
+        const osc = actx.createOscillator();
+        const g = actx.createGain();
+        osc.type = "triangle";
+        osc.frequency.value = i === 0 ? 660 : 990;
+        const start = t + i * 0.09;
+        g.gain.setValueAtTime(0, start);
+        g.gain.linearRampToValueAtTime(0.18, start + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, start + 0.35);
+        osc.connect(g);
+        g.connect(masterGain);
+        osc.start(start);
+        osc.stop(start + 0.4);
+      });
+    }
+
+    // ----------------------------------------------------------------------
+    // Heart UI (canvas-drawn, Zelda-style)
+    // ----------------------------------------------------------------------
+    const heartsEl = document.getElementById("hearts");
+    const heartCanvases = [];
+    for (let i = 0; i < MAX_HEALTH; i++) {
+      const slot = document.createElement("div");
+      slot.className = "heart-slot";
+      const c = document.createElement("canvas");
+      c.width = 68; c.height = 68;
+      slot.appendChild(c);
+      heartsEl.appendChild(slot);
+      heartCanvases.push(c);
+    }
+
+    function drawHeart(ctx, fill) {
+      // fill: 0 = empty, 0.5 = half, 1 = full
+      const w = 68, h = 68;
+      ctx.clearRect(0, 0, w, h);
+      ctx.save();
+      ctx.translate(w / 2, h / 2 + 4);
+      ctx.scale(2.4, 2.4);
+
+      function path() {
+        ctx.beginPath();
+        ctx.moveTo(0, 8);
+        ctx.bezierCurveTo(0, 8, -9, 0, -9, -5);
+        ctx.bezierCurveTo(-9, -10, -4, -11, 0, -6);
+        ctx.bezierCurveTo(4, -11, 9, -10, 9, -5);
+        ctx.bezierCurveTo(9, 0, 0, 8, 0, 8);
+        ctx.closePath();
+      }
+
+      // empty base
+      path();
+      ctx.fillStyle = "rgba(60,40,55,0.55)";
+      ctx.fill();
+      ctx.lineWidth = 1.6;
+      ctx.strokeStyle = "rgba(255,255,255,0.35)";
+      ctx.stroke();
+
+      // fill portion via clipping
+      if (fill > 0) {
+        ctx.save();
+        path();
+        ctx.clip();
+        const clipW = fill >= 1 ? 22 : 0; // full
+        if (fill >= 1) {
+          ctx.fillStyle = "#ff5e87";
+          ctx.fillRect(-12, -14, 24, 28);
+        } else {
+          // half — left side filled
+          ctx.fillStyle = "#ff5e87";
+          ctx.fillRect(-12, -14, 12, 28);
+        }
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+
+    function updateHeartsUI() {
+      for (let i = 0; i < MAX_HEALTH; i++) {
+        const ctx = heartCanvases[i].getContext("2d");
+        const remaining = health - i;
+        let fill = 0;
+        if (remaining >= 1) fill = 1;
+        else if (remaining >= 0.5) fill = 0.5;
+        else fill = 0;
+        drawHeart(ctx, fill);
+      }
+    }
+
+    const countEl = document.getElementById("count");
+    function updateCount() {
+      countEl.textContent = collected + " / " + TOTAL_HEARTS + " donationer";
+    }
+
+    // ----------------------------------------------------------------------
+    // Collection
+    // ----------------------------------------------------------------------
+    function collectHeart(g) {
+      g.userData.collected = true;
+      scene.remove(g);
+      collected++;
+      health = Math.min(MAX_HEALTH, health + HEART_VALUE);
+      updateHeartsUI();
+      updateCount();
+      chime();
+      scheduleHeartbeat(); // re-evaluate beep interval / ambient threshold
+
+      if (collected >= TOTAL_HEARTS) triggerWin();
+    }
+
+    // ----------------------------------------------------------------------
+    // Win
+    // ----------------------------------------------------------------------
+    const winEl = document.getElementById("win");
+    function triggerWin() {
+      won = true;
+      document.getElementById("hint").style.opacity = "0";
+      // let the ambient tone carry the moment
+      setTimeout(function () { winEl.classList.add("show"); }, 600);
+    }
+
+    // ----------------------------------------------------------------------
+    // Input
+    // ----------------------------------------------------------------------
+    window.addEventListener("keydown", function (e) {
+      keys[e.code] = true;
+    });
+    window.addEventListener("keyup", function (e) {
+      keys[e.code] = false;
+    });
+
+    const startEl = document.getElementById("start");
+    startEl.addEventListener("click", function () {
+      if (started) return;
+      started = true;
+      initAudio();
+      if (actx && actx.state === "suspended") actx.resume();
+      startEl.style.opacity = "0";
+      setTimeout(function () { startEl.classList.add("hidden"); }, 1400);
+      canvas.requestPointerLock && canvas.requestPointerLock();
+      // fade hint after a while
+      setTimeout(function () {
+        document.getElementById("hint").style.opacity = "0";
+      }, 9000);
+    });
+
+    canvas.addEventListener("click", function () {
+      if (started && !won && document.pointerLockElement !== canvas) {
+        canvas.requestPointerLock && canvas.requestPointerLock();
+      }
+    });
+
+    // ----------------------------------------------------------------------
+    // Movement helpers
+    // ----------------------------------------------------------------------
+    const sagaVel = new THREE.Vector3();
+    let facing = Math.PI;
+
+    function resolveObstacles(nx, nz) {
+      // push out of obstacle radii + keep within world bounds
+      for (let i = 0; i < obstacles.length; i++) {
+        const o = obstacles[i];
+        const dx = nx - o.x, dz = nz - o.z;
+        const minD = o.radius + 0.6;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < minD && d > 0.0001) {
+          nx = o.x + (dx / d) * minD;
+          nz = o.z + (dz / d) * minD;
+        }
+      }
+      const lim = WORLD_SIZE;
+      nx = Math.max(-lim, Math.min(lim, nx));
+      nz = Math.max(-lim, Math.min(lim, nz));
+      return [nx, nz];
+    }
+
+    // ----------------------------------------------------------------------
+    // Main loop
+    // ----------------------------------------------------------------------
+    let last = performance.now();
+    let walkPhase = 0;
+
+    function animate(now) {
+      requestAnimationFrame(animate);
+      const dt = Math.min((now - last) / 1000, 0.05);
+      last = now;
+
+      const healthFrac = health / MAX_HEALTH;          // 0.1 .. 1.0
+      // speed scales with health: slow & heavy when weak, free when strong
+      const speed = 2.4 + healthFrac * 7.0;            // units/sec
+
+      // --- input -> desired direction (camera relative) ---
+      let ix = 0, iz = 0;
+      if (started && !won) {
+        if (keys["KeyW"] || keys["ArrowUp"]) iz -= 1;
+        if (keys["KeyS"] || keys["ArrowDown"]) iz += 1;
+        if (keys["KeyA"] || keys["ArrowLeft"]) ix -= 1;
+        if (keys["KeyD"] || keys["ArrowRight"]) ix += 1;
+      }
+
+      let moving = false;
+      if (ix !== 0 || iz !== 0) {
+        moving = true;
+        // camera forward / right on the ground plane
+        const sin = Math.sin(camAzimuth), cos = Math.cos(camAzimuth);
+        // forward is direction camera looks toward Saga -> -camera offset
+        const fwdX = -sin, fwdZ = -cos;
+        const rightX = cos, rightZ = -sin;
+        let mx = fwdX * (-iz) + rightX * ix;
+        let mz = fwdZ * (-iz) + rightZ * ix;
+        const len = Math.sqrt(mx * mx + mz * mz) || 1;
+        mx /= len; mz /= len;
+
+        // heavy acceleration when weak (sluggish feel), snappier when strong
+        const accel = 6 + healthFrac * 16;
+        sagaVel.x += (mx * speed - sagaVel.x) * Math.min(1, accel * dt);
+        sagaVel.z += (mz * speed - sagaVel.z) * Math.min(1, accel * dt);
+
+        facing = Math.atan2(mx, mz);
+      } else {
+        // friction
+        sagaVel.x -= sagaVel.x * Math.min(1, 8 * dt);
+        sagaVel.z -= sagaVel.z * Math.min(1, 8 * dt);
+      }
+
+      let nx = saga.position.x + sagaVel.x * dt;
+      let nz = saga.position.z + sagaVel.z * dt;
+      const resolved = resolveObstacles(nx, nz);
+      saga.position.x = resolved[0];
+      saga.position.z = resolved[1];
+
+      // smooth turn toward facing
+      let da = facing - saga.rotation.y;
+      while (da > Math.PI) da -= Math.PI * 2;
+      while (da < -Math.PI) da += Math.PI * 2;
+      saga.rotation.y += da * Math.min(1, 10 * dt);
+
+      // --- walk animation, energy scales with health ---
+      const horizSpeed = Math.sqrt(sagaVel.x * sagaVel.x + sagaVel.z * sagaVel.z);
+      const energy = 0.4 + healthFrac * 1.4;
+      walkPhase += horizSpeed * dt * 3.2;
+      const swing = Math.sin(walkPhase) * 0.5 * energy;
+      legL.rotation.x = swing;
+      legR.rotation.x = -swing;
+      armL.rotation.x = -swing * 0.7;
+      armR.rotation.x = swing * 0.7;
+      // gentle body bob; a tired sag when weak, lifted when strong
+      const bob = Math.abs(Math.sin(walkPhase)) * 0.06 * energy;
+      saga.position.y = bob;
+      // weak posture: lean slightly, head a touch low
+      head.position.y = 1.95 - (1 - healthFrac) * 0.06;
+
+      // --- donation hearts float + spin, proximity collect ---
+      const tsec = now / 1000;
+      for (let i = 0; i < donationHearts.length; i++) {
+        const g = donationHearts[i];
+        if (g.userData.collected) continue;
+        g.rotation.y += dt * 0.9;
+        g.position.y = g.userData.baseY + Math.sin(tsec * 1.6 + g.userData.phase) * 0.25;
+        if (started && !won) {
+          const dx = g.position.x - saga.position.x;
+          const dz = g.position.z - saga.position.z;
+          if (dx * dx + dz * dz < COLLECT_RADIUS * COLLECT_RADIUS) {
+            collectHeart(g);
+          }
+        }
+      }
+
+      // --- camera follow (smooth) ---
+      const targetY = 1.3;
+      const offX = Math.sin(camAzimuth) * camDist * Math.cos(camPitch);
+      const offZ = Math.cos(camAzimuth) * camDist * Math.cos(camPitch);
+      const offY = camDist * Math.sin(camPitch) + 2.2;
+      const desired = new THREE.Vector3(
+        saga.position.x + offX,
+        saga.position.y + offY,
+        saga.position.z + offZ
+      );
+      camera.position.lerp(desired, Math.min(1, 4 * dt));
+      camera.lookAt(saga.position.x, saga.position.y + targetY, saga.position.z);
+
+      renderer.render(scene, camera);
+    }
+
+    // ----------------------------------------------------------------------
+    // Resize
+    // ----------------------------------------------------------------------
+    window.addEventListener("resize", function () {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ----------------------------------------------------------------------
+    // Init
+    // ----------------------------------------------------------------------
+    // place camera initially behind Saga
+    camera.position.set(0, 6, 11);
+    camera.lookAt(0, 1.3, 0);
+    updateHeartsUI();
+    updateCount();
+    requestAnimationFrame(animate);
+  })();
+  </script>
+</body>
+</html>
