@@ -154,8 +154,17 @@
     <div class="line2">Hjärtfel drabbar 1 av 100 barn födda i Sverige.</div>
   </div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/r152/three.module.min.js"
+    }
+  }
+  </script>
+  <script type="module">
+  import * as THREE from "three";
+  import { GLTFLoader } from "https://cdnjs.cloudflare.com/ajax/libs/three.js/r152/examples/jsm/loaders/GLTFLoader.js";
+
   (function () {
     "use strict";
 
@@ -177,6 +186,10 @@
     let started = false;
     let won = false;
     const keys = {};
+
+    // Animation scaffolding (for a future GLTF character via GLTFLoader)
+    const clock = new THREE.Clock();
+    let mixer = null;
 
     // ----------------------------------------------------------------------
     // Renderer / Scene / Camera
@@ -311,58 +324,6 @@
     // Saga — low-poly girl built from primitives
     // ----------------------------------------------------------------------
     const saga = new THREE.Group();
-    const skin = new THREE.MeshStandardMaterial({ color: 0xf0c9a8, roughness: 0.9 });
-    const dressMat = new THREE.MeshStandardMaterial({ color: 0xc25b7c, roughness: 0.85 });
-    const hairMat = new THREE.MeshStandardMaterial({ color: 0x3a2417, roughness: 0.9 });
-    const legMat = new THREE.MeshStandardMaterial({ color: 0xe8e0e8, roughness: 0.9 });
-
-    // legs (animated)
-    const legGeo = new THREE.BoxGeometry(0.22, 0.7, 0.22);
-    const legL = new THREE.Mesh(legGeo, legMat);
-    const legR = new THREE.Mesh(legGeo, legMat);
-    legL.position.set(-0.16, 0.35, 0);
-    legR.position.set(0.16, 0.35, 0);
-    legL.castShadow = legR.castShadow = true;
-    saga.add(legL, legR);
-
-    // dress (cone skirt + torso)
-    const skirt = new THREE.Mesh(new THREE.ConeGeometry(0.6, 0.95, 8), dressMat);
-    skirt.position.y = 1.0;
-    skirt.castShadow = true;
-    saga.add(skirt);
-
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.55, 0.34), dressMat);
-    torso.position.y = 1.45;
-    torso.castShadow = true;
-    saga.add(torso);
-
-    // arms (animated)
-    const armGeo = new THREE.BoxGeometry(0.16, 0.55, 0.16);
-    const armL = new THREE.Mesh(armGeo, skin);
-    const armR = new THREE.Mesh(armGeo, skin);
-    armL.position.set(-0.34, 1.5, 0);
-    armR.position.set(0.34, 1.5, 0);
-    armL.castShadow = armR.castShadow = true;
-    saga.add(armL, armR);
-
-    // head
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.32, 16, 16), skin);
-    head.position.y = 1.95;
-    head.castShadow = true;
-    saga.add(head);
-
-    // hair — cap + two side bunches
-    const hairCap = new THREE.Mesh(new THREE.SphereGeometry(0.35, 16, 16, 0, Math.PI * 2, 0, Math.PI * 0.62), hairMat);
-    hairCap.position.y = 2.0;
-    hairCap.castShadow = true;
-    saga.add(hairCap);
-    const bunGeo = new THREE.SphereGeometry(0.16, 10, 10);
-    const bunL = new THREE.Mesh(bunGeo, hairMat);
-    const bunR = new THREE.Mesh(bunGeo, hairMat);
-    bunL.position.set(-0.34, 1.92, -0.02);
-    bunR.position.set(0.34, 1.92, -0.02);
-    saga.add(bunL, bunR);
-
     saga.position.set(0, 0, 0);
     scene.add(saga);
 
@@ -370,6 +331,49 @@
     const sagaGlow = new THREE.PointLight(0xffd0e0, 0.4, 6);
     sagaGlow.position.set(0, 1.2, 0);
     saga.add(sagaGlow);
+
+    // Saga is loaded from Saga.glb (skinned + animated). The native model
+    // stands ~3.75 units tall, so scale her down to a small child.
+    const MODEL_SCALE = 0.45;
+    // If she walks backwards / faces the wrong way, flip this to Math.PI.
+    const MODEL_FACING_OFFSET = 0;
+    let idleAction = null;
+    let walkAction = null;
+
+    const gltfLoader = new GLTFLoader();
+    gltfLoader.load(
+      "Saga.glb",
+      function (gltf) {
+        const model = gltf.scene;
+        model.scale.setScalar(MODEL_SCALE);
+        model.rotation.y = MODEL_FACING_OFFSET;
+        model.traverse(function (o) {
+          if (o.isMesh) {
+            o.castShadow = true;
+            // skinned meshes can be wrongly culled once posed — keep her visible
+            o.frustumCulled = false;
+          }
+        });
+        saga.add(model);
+
+        mixer = new THREE.AnimationMixer(model);
+        const idle = THREE.AnimationClip.findByName(gltf.animations, "Idle");
+        const walk = THREE.AnimationClip.findByName(gltf.animations, "Walk");
+        if (idle) {
+          idleAction = mixer.clipAction(idle);
+          idleAction.play();
+        }
+        if (walk) {
+          walkAction = mixer.clipAction(walk);
+          walkAction.play();
+          walkAction.setEffectiveWeight(0); // idle by default, faded in by speed
+        }
+      },
+      undefined,
+      function (err) {
+        console.error("Could not load Saga.glb:", err);
+      }
+    );
 
     // ----------------------------------------------------------------------
     // Donation hearts
@@ -722,12 +726,14 @@
     // Main loop
     // ----------------------------------------------------------------------
     let last = performance.now();
-    let walkPhase = 0;
 
     function animate(now) {
       requestAnimationFrame(animate);
       const dt = Math.min((now - last) / 1000, 0.05);
       last = now;
+
+      const delta = clock.getDelta();
+      if (mixer) mixer.update(delta);
 
       const healthFrac = health / MAX_HEALTH;          // 0.1 .. 1.0
       // speed scales with health: slow & heavy when weak, free when strong
@@ -779,20 +785,15 @@
       while (da < -Math.PI) da += Math.PI * 2;
       saga.rotation.y += da * Math.min(1, 10 * dt);
 
-      // --- walk animation, energy scales with health ---
+      // --- drive the GLB character: crossfade Idle <-> Walk by speed,
+      //     and scale animation energy with health (weak = sluggish) ---
       const horizSpeed = Math.sqrt(sagaVel.x * sagaVel.x + sagaVel.z * sagaVel.z);
-      const energy = 0.4 + healthFrac * 1.4;
-      walkPhase += horizSpeed * dt * 3.2;
-      const swing = Math.sin(walkPhase) * 0.5 * energy;
-      legL.rotation.x = swing;
-      legR.rotation.x = -swing;
-      armL.rotation.x = -swing * 0.7;
-      armR.rotation.x = swing * 0.7;
-      // gentle body bob; a tired sag when weak, lifted when strong
-      const bob = Math.abs(Math.sin(walkPhase)) * 0.06 * energy;
-      saga.position.y = bob;
-      // weak posture: lean slightly, head a touch low
-      head.position.y = 1.95 - (1 - healthFrac) * 0.06;
+      if (mixer) mixer.timeScale = 0.55 + healthFrac * 0.85;
+      const moveAmt = Math.min(1, horizSpeed / 2.5);
+      if (idleAction && walkAction) {
+        walkAction.setEffectiveWeight(moveAmt);
+        idleAction.setEffectiveWeight(1 - moveAmt);
+      }
 
       // --- donation hearts float + spin, proximity collect ---
       const tsec = now / 1000;
