@@ -154,8 +154,17 @@
     <div class="line2">Hjärtfel drabbar 1 av 100 barn födda i Sverige.</div>
   </div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/r152/three.module.min.js"
+    }
+  }
+  </script>
+  <script type="module">
+  import * as THREE from "three";
+  import { GLTFLoader } from "https://cdnjs.cloudflare.com/ajax/libs/three.js/r152/examples/jsm/loaders/GLTFLoader.js";
+
   (function () {
     "use strict";
 
@@ -177,6 +186,10 @@
     let started = false;
     let won = false;
     const keys = {};
+
+    // Animation scaffolding (for a future GLTF character via GLTFLoader)
+    const clock = new THREE.Clock();
+    let mixer = null;
 
     // ----------------------------------------------------------------------
     // Renderer / Scene / Camera
@@ -728,6 +741,9 @@
       requestAnimationFrame(animate);
       const dt = Math.min((now - last) / 1000, 0.05);
       last = now;
+
+      const delta = clock.getDelta();
+      if (mixer) mixer.update(delta);
 
       const healthFrac = health / MAX_HEALTH;          // 0.1 .. 1.0
       // speed scales with health: slow & heavy when weak, free when strong
