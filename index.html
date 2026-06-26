@@ -300,6 +300,19 @@
       return g;
     }
 
+    // Flat stylized colors per asset (textures didn't embed in the GLBs).
+    // Filename picks the palette; for trees the material name (Bark vs Leaves)
+    // picks trunk vs foliage within that palette.
+    function toonColorFor(path, matName) {
+      matName = matName || "";
+      if (path.indexOf("Rock") !== -1) return 0x8a8a8a;
+      if (path.indexOf("Bush") !== -1) return 0x5a8f3c;
+      const isBark = matName.indexOf("Bark") !== -1;
+      if (path.indexOf("Pine") !== -1) return isBark ? 0x6b4423 : 0x2d5a27;
+      // CommonTree_1 / CommonTree_3
+      return isBark ? 0x8b5e3c : 0x4a7c3f;
+    }
+
     // Load a GLB and place it; on failure, silently fall back to a primitive.
     function loadAndPlaceAsset(path, x, z, scale, rotY) {
       envLoader.load(
@@ -309,7 +322,16 @@
           obj.position.set(x, 0, z);
           obj.scale.setScalar(scale);
           obj.rotation.y = rotY;
-          obj.traverse(function (o) { if (o.isMesh) o.castShadow = true; });
+          obj.traverse(function (o) {
+            if (o.isMesh) {
+              o.castShadow = true;
+              const old = o.material;
+              o.material = new THREE.MeshToonMaterial({
+                color: toonColorFor(path, old && old.name)
+              });
+              if (old && old.dispose) old.dispose();
+            }
+          });
           scene.add(obj);
         },
         undefined,
