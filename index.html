@@ -201,164 +201,247 @@
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-    const SKY = 0x1a1a2e;
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(SKY);
-    scene.fog = new THREE.Fog(SKY, 35, 105);
+    scene.fog = new THREE.FogExp2(0xc9e8f0, 0.018);
 
+    // Gradient sky dome: warm sky blue at horizon -> deeper blue overhead.
+    const skyGeo = new THREE.SphereGeometry(400, 32, 16);
+    const skyMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+      uniforms: {
+        topColor: { value: new THREE.Color(0x4a90d9) },
+        horizonColor: { value: new THREE.Color(0x87ceeb) }
+      },
+      vertexShader: [
+        "varying vec3 vWorldPos;",
+        "void main() {",
+        "  vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;",
+        "  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);",
+        "}"
+      ].join("\n"),
+      fragmentShader: [
+        "varying vec3 vWorldPos;",
+        "uniform vec3 topColor;",
+        "uniform vec3 horizonColor;",
+        "void main() {",
+        "  float h = clamp(normalize(vWorldPos).y, 0.0, 1.0);",
+        "  gl_FragColor = vec4(mix(horizonColor, topColor, h), 1.0);",
+        "}"
+      ].join("\n")
+    });
+    scene.add(new THREE.Mesh(skyGeo, skyMat));
+
+    // far plane raised from 400 so the radius-400 sky dome isn't clipped;
+    // camera follow / controls are otherwise unchanged.
     const camera = new THREE.PerspectiveCamera(
-      55, window.innerWidth / window.innerHeight, 0.1, 400
+      55, window.innerWidth / window.innerHeight, 0.1, 1000
     );
 
     // ----------------------------------------------------------------------
     // Lights
     // ----------------------------------------------------------------------
-    const ambient = new THREE.AmbientLight(0x404a66, 0.85); // low ambient
+    const ambient = new THREE.AmbientLight(0xfff4e0, 0.7); // warm fill
     scene.add(ambient);
 
-    const dir = new THREE.DirectionalLight(0xbfc8ff, 0.9);  // from above-left
-    dir.position.set(-40, 60, 30);
+    const dir = new THREE.DirectionalLight(0xfff8dc, 1.2);  // warm sun
+    dir.position.set(60, 80, 40);
     dir.castShadow = true;
     dir.shadow.mapSize.set(2048, 2048);
     dir.shadow.camera.near = 1;
-    dir.shadow.camera.far = 200;
+    dir.shadow.camera.far = 250;
     dir.shadow.camera.left = -120;
     dir.shadow.camera.right = 120;
     dir.shadow.camera.top = 120;
     dir.shadow.camera.bottom = -120;
     scene.add(dir);
 
-    // a faint cool fill from the opposite side
-    const fill = new THREE.DirectionalLight(0x2a2a55, 0.4);
-    fill.position.set(30, 20, -40);
-    scene.add(fill);
+    // soft sky/ground fill
+    const hemi = new THREE.HemisphereLight(0x87ceeb, 0x7ab648, 0.4);
+    scene.add(hemi);
+
+    const randRange = function (a, b) { return a + Math.random() * (b - a); };
 
     // ----------------------------------------------------------------------
-    // Ground — grass plane
+    // Ground — bright stylized grass + depth patches
     // ----------------------------------------------------------------------
-    const groundGeo = new THREE.PlaneGeometry(WORLD_SIZE * 3, WORLD_SIZE * 3, 1, 1);
-    const groundMat = new THREE.MeshStandardMaterial({
-      color: 0x5a8a4a, roughness: 1.0, metalness: 0.0
-    });
-    const ground = new THREE.Mesh(groundGeo, groundMat);
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(WORLD_SIZE * 3, WORLD_SIZE * 3, 1, 1),
+      new THREE.MeshLambertMaterial({ color: 0x7ab648 })
+    );
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
     scene.add(ground);
 
+    // a second, slightly transparent layer of soft circular patches for depth
+    for (let i = 0; i < 48; i++) {
+      const patch = new THREE.Mesh(
+        new THREE.CircleGeometry(randRange(2, 6), 16),
+        new THREE.MeshLambertMaterial({ color: 0x5a9e32, transparent: true, opacity: 0.3 })
+      );
+      patch.rotation.x = -Math.PI / 2;
+      patch.position.set(
+        randRange(-WORLD_SIZE, WORLD_SIZE), 0.02, randRange(-WORLD_SIZE, WORLD_SIZE)
+      );
+      patch.receiveShadow = true;
+      scene.add(patch);
+    }
+
     // ----------------------------------------------------------------------
-    // Environment — Quaternius Stylized Nature MegaKit (GLB assets)
+    // Environment — procedural Ghibli-style nature
     // ----------------------------------------------------------------------
     const obstacles = []; // {x, z, radius}
-    const envLoader = new GLTFLoader();
-    const randRange = function (a, b) { return a + Math.random() * (b - a); };
+    const windCanopies = []; // tree canopies that sway in the wind
 
-    // Primitive stand-in used only if a GLB fails to load.
-    function makeFallback(path, x, z, scale, rotY) {
+    // Register a canopy group on its tree so the animate loop can sway it.
+    function registerCanopy(treeGroup, canopy) {
+      canopy.userData.phase = randRange(0, Math.PI * 2);
+      treeGroup.add(canopy);
+      windCanopies.push(canopy);
+    }
+
+    // Variant A — CommonTree: cylinder trunk + 3 stacked sphere canopy layers.
+    function makeCommonTree() {
       const g = new THREE.Group();
-      if (path.indexOf("Rock") !== -1) {
-        const s = 1.2 * scale;
-        const rock = new THREE.Mesh(
-          new THREE.DodecahedronGeometry(s, 0),
-          new THREE.MeshStandardMaterial({ color: 0x4a4a55, roughness: 1, flatShading: true })
+      const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.18, 0.28, 2.2, 8),
+        new THREE.MeshLambertMaterial({ color: 0x8b5e3c })
+      );
+      trunk.position.y = 1.1;
+      trunk.castShadow = true;
+      g.add(trunk);
+
+      const canopy = new THREE.Group();
+      const sizes = [1.8, 1.5, 1.1];
+      const colors = [0x4a9e3f, 0x3d8c34, 0x56b048];
+      let y = 2.4;
+      for (let i = 0; i < 3; i++) {
+        const leaf = new THREE.Mesh(
+          new THREE.SphereGeometry(sizes[i], 12, 10),
+          new THREE.MeshLambertMaterial({ color: colors[i] })
         );
-        rock.position.y = s * 0.5;
-        rock.rotation.set(Math.random(), Math.random(), Math.random());
-        rock.castShadow = true;
-        g.add(rock);
-      } else if (path.indexOf("Bush") !== -1) {
-        const s = 0.8 * scale;
-        const bush = new THREE.Mesh(
-          new THREE.SphereGeometry(s, 8, 6),
-          new THREE.MeshStandardMaterial({ color: 0x2f5a34, roughness: 1, flatShading: true })
-        );
-        bush.position.y = s * 0.6;
-        bush.scale.y = 0.7;
-        bush.castShadow = true;
-        g.add(bush);
-      } else { // CommonTree / Pine
-        const trunkH = 3.0 * scale;
-        const trunk = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.35 * scale, 0.5 * scale, trunkH, 6),
-          new THREE.MeshStandardMaterial({ color: 0x3a2a22, roughness: 1 })
-        );
-        trunk.position.y = trunkH / 2;
-        trunk.castShadow = true;
-        g.add(trunk);
-        for (let i = 0; i < 3; i++) {
-          const r = (2.4 - i * 0.55) * scale;
-          const cone = new THREE.Mesh(
-            new THREE.ConeGeometry(r, 2.0 * scale, 7),
-            new THREE.MeshStandardMaterial({ color: 0x274736, roughness: 1 })
-          );
-          cone.position.y = trunkH + i * 1.2 * scale;
-          cone.castShadow = true;
-          g.add(cone);
-        }
+        leaf.position.set(randRange(-0.3, 0.3), y, randRange(-0.3, 0.3));
+        leaf.castShadow = true;
+        canopy.add(leaf);
+        y += sizes[i] * 0.8;
       }
-      g.position.set(x, 0, z);
-      g.rotation.y = rotY;
+      registerCanopy(g, canopy);
       return g;
     }
 
-    // Flat stylized colors per asset (textures didn't embed in the GLBs).
-    // Filename picks the palette; for trees the material name (Bark vs Leaves)
-    // picks trunk vs foliage within that palette.
-    function toonColorFor(path, matName) {
-      matName = matName || "";
-      if (path.indexOf("Rock") !== -1) return 0x8a8a8a;
-      if (path.indexOf("Bush") !== -1) return 0x5a8f3c;
-      const isBark = matName.indexOf("Bark") !== -1;
-      if (path.indexOf("Pine") !== -1) return isBark ? 0x6b4423 : 0x2d5a27;
-      // CommonTree_1 / CommonTree_3
-      return isBark ? 0x8b5e3c : 0x4a7c3f;
-    }
-
-    // Load a GLB and place it; on failure, silently fall back to a primitive.
-    function loadAndPlaceAsset(path, x, z, scale, rotY) {
-      envLoader.load(
-        path,
-        function (gltf) {
-          const obj = gltf.scene;
-          obj.position.set(x, 0, z);
-          obj.scale.setScalar(scale);
-          obj.rotation.y = rotY;
-          obj.traverse(function (o) {
-            if (o.isMesh) {
-              o.castShadow = true;
-              const old = o.material;
-              o.material = new THREE.MeshToonMaterial({
-                color: toonColorFor(path, old && old.name)
-              });
-              if (old && old.dispose) old.dispose();
-            }
-          });
-          scene.add(obj);
-        },
-        undefined,
-        function () {
-          scene.add(makeFallback(path, x, z, scale, rotY));
-        }
+    // Variant B — Pine: thin trunk + 4 stacked cone layers.
+    function makePine() {
+      const g = new THREE.Group();
+      const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.12, 0.2, 2.8, 8),
+        new THREE.MeshLambertMaterial({ color: 0x6b4226 })
       );
+      trunk.position.y = 1.4;
+      trunk.castShadow = true;
+      g.add(trunk);
+
+      const canopy = new THREE.Group();
+      const radii = [1.4, 1.1, 0.8, 0.5];
+      let y = 2.0;
+      for (let i = 0; i < 4; i++) {
+        const cone = new THREE.Mesh(
+          new THREE.ConeGeometry(radii[i], 1.6, 8),
+          new THREE.MeshLambertMaterial({ color: 0x2d6e3e })
+        );
+        cone.position.y = y;
+        cone.castShadow = true;
+        canopy.add(cone);
+        y += 0.9;
+      }
+      registerCanopy(g, canopy);
+      return g;
     }
 
-    // Same landmark positions as before; distribute tree/rock variants across them.
-    const treeModels = ["CommonTree_1.glb", "CommonTree_3.glb", "Pine_3.glb"];
-    const rockModels = ["Rock_Medium_1.glb", "Rock_Medium_3.glb"];
+    // Variant C — TwistedTree (autumn): leaning trunk + 2 warm orange spheres.
+    function makeTwistedTree() {
+      const g = new THREE.Group();
+      const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.15, 0.25, 2.5, 8),
+        new THREE.MeshLambertMaterial({ color: 0x7a5230 })
+      );
+      trunk.position.y = 1.25;
+      trunk.rotation.z = 0.15; // slight lean
+      trunk.castShadow = true;
+      g.add(trunk);
+
+      const canopy = new THREE.Group();
+      const c1 = new THREE.Mesh(
+        new THREE.SphereGeometry(1.5, 12, 10),
+        new THREE.MeshLambertMaterial({ color: 0xe8823a })
+      );
+      c1.position.set(0.25, 2.7, 0);
+      c1.castShadow = true;
+      const c2 = new THREE.Mesh(
+        new THREE.SphereGeometry(1.1, 12, 10),
+        new THREE.MeshLambertMaterial({ color: 0xd46a28 })
+      );
+      c2.position.set(0.55, 3.4, 0.2);
+      c2.castShadow = true;
+      canopy.add(c1, c2);
+      registerCanopy(g, canopy);
+      return g;
+    }
+
+    // Rocks — flattened icosahedrons, randomized for two-variant variety.
+    function makeRock() {
+      const g = new THREE.Group();
+      const r = randRange(0.6, 1.2);
+      const rock = new THREE.Mesh(
+        new THREE.IcosahedronGeometry(r, 1),
+        new THREE.MeshLambertMaterial({ color: 0x9aa0a6 })
+      );
+      rock.scale.y = 0.65;
+      rock.position.y = r * 0.35;
+      rock.rotation.set(
+        randRange(0, Math.PI * 2), randRange(0, Math.PI * 2), randRange(0, Math.PI * 2)
+      );
+      rock.castShadow = true;
+      rock.receiveShadow = true;
+      g.add(rock);
+      return g;
+    }
+
+    // Bushes — two overlapping spheres.
+    function makeBush() {
+      const g = new THREE.Group();
+      const mat = new THREE.MeshLambertMaterial({ color: 0x5a9e32 });
+      const b1 = new THREE.Mesh(new THREE.SphereGeometry(0.5, 10, 8), mat);
+      b1.position.set(-0.2, 0.45, 0);
+      b1.castShadow = true;
+      const b2 = new THREE.Mesh(new THREE.SphereGeometry(0.4, 10, 8), mat);
+      b2.position.set(0.3, 0.4, 0);
+      b2.castShadow = true;
+      g.add(b1, b2);
+      return g;
+    }
+
+    // Same landmark positions / obstacle radii as before.
+    const treeBuilders = [makeCommonTree, makePine, makeTwistedTree];
     const landmarkSpots = [
       [-22, -14, "tree"], [18, -26, "tree"], [34, 10, "tree"],
       [-30, 22, "tree"], [8, 32, "tree"], [-12, -34, "tree"],
       [26, 28, "rock"], [-38, -6, "rock"], [14, 6, "rock"], [-6, 24, "rock"]
     ];
-    let treeIdx = 0, rockIdx = 0;
+    let treeIdx = 0;
     landmarkSpots.forEach(function (s) {
       const x = s[0], z = s[1];
-      const scale = randRange(0.8, 1.2);
-      const rotY = randRange(0, Math.PI * 2);
       if (s[2] === "tree") {
-        loadAndPlaceAsset(treeModels[treeIdx++ % treeModels.length], x, z, scale, rotY);
+        const t = treeBuilders[treeIdx++ % treeBuilders.length]();
+        t.position.set(x, 0, z);
+        t.rotation.y = randRange(0, Math.PI * 2);
+        t.scale.setScalar(randRange(0.85, 1.15));
+        scene.add(t);
         obstacles.push({ x: x, z: z, radius: 1.4 });
       } else {
-        loadAndPlaceAsset(rockModels[rockIdx++ % rockModels.length], x, z, scale, rotY);
+        const r = makeRock();
+        r.position.set(x, 0, z);
+        scene.add(r);
         obstacles.push({ x: x, z: z, radius: 0.9 });
       }
     });
@@ -366,7 +449,11 @@
     // Bushes sprinkled between the trees (decorative — no collision).
     const bushSpots = [[-25, 8], [4, -18], [22, -4], [-15, -22], [30, 18], [0, 16]];
     bushSpots.forEach(function (p) {
-      loadAndPlaceAsset("Bush_Common.glb", p[0], p[1], randRange(0.8, 1.2), randRange(0, Math.PI * 2));
+      const b = makeBush();
+      b.position.set(p[0], 0, p[1]);
+      b.rotation.y = randRange(0, Math.PI * 2);
+      b.scale.setScalar(randRange(0.85, 1.2));
+      scene.add(b);
     });
 
     // ----------------------------------------------------------------------
@@ -851,6 +938,7 @@
         if (g.userData.collected) continue;
         g.rotation.y += dt * 0.9;
         g.position.y = g.userData.baseY + Math.sin(tsec * 1.6 + g.userData.phase) * 0.25;
+        g.scale.setScalar(1 + Math.sin(Date.now() * 0.004) * 0.08);
         if (started && !won) {
           const dx = g.position.x - saga.position.x;
           const dz = g.position.z - saga.position.z;
@@ -858,6 +946,13 @@
             collectHeart(g);
           }
         }
+      }
+
+      // --- wind: gentle out-of-sync sway of every tree canopy ---
+      for (let i = 0; i < windCanopies.length; i++) {
+        const canopy = windCanopies[i];
+        canopy.rotation.z = Math.sin(Date.now() * 0.001 + canopy.userData.phase) * 0.04;
+        canopy.rotation.x = Math.cos(Date.now() * 0.0007 + canopy.userData.phase) * 0.025;
       }
 
       // --- camera follow (smooth) ---
