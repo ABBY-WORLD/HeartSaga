@@ -238,86 +238,113 @@
     // ----------------------------------------------------------------------
     const groundGeo = new THREE.PlaneGeometry(WORLD_SIZE * 3, WORLD_SIZE * 3, 1, 1);
     const groundMat = new THREE.MeshStandardMaterial({
-      color: 0x2f4538, roughness: 1.0, metalness: 0.0
+      color: 0x5a8a4a, roughness: 1.0, metalness: 0.0
     });
     const ground = new THREE.Mesh(groundGeo, groundMat);
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
     scene.add(ground);
 
-    // subtle darker grass patches for texture-feel (no external images)
-    for (let i = 0; i < 40; i++) {
-      const r = 3 + Math.random() * 8;
-      const patchGeo = new THREE.CircleGeometry(r, 6);
-      const patchMat = new THREE.MeshStandardMaterial({
-        color: 0x283a30, roughness: 1.0,
-        transparent: true, opacity: 0.5
-      });
-      const patch = new THREE.Mesh(patchGeo, patchMat);
-      patch.rotation.x = -Math.PI / 2;
-      patch.position.set(
-        (Math.random() - 0.5) * WORLD_SIZE * 2,
-        0.01,
-        (Math.random() - 0.5) * WORLD_SIZE * 2
-      );
-      scene.add(patch);
-    }
-
     // ----------------------------------------------------------------------
-    // Obstacles — low-poly trees and rocks
+    // Environment — Quaternius Stylized Nature MegaKit (GLB assets)
     // ----------------------------------------------------------------------
-    const obstacles = []; // {pos, radius}
+    const obstacles = []; // {x, z, radius}
+    const envLoader = new GLTFLoader();
+    const randRange = function (a, b) { return a + Math.random() * (b - a); };
 
-    function makeTree(x, z) {
+    // Primitive stand-in used only if a GLB fails to load.
+    function makeFallback(path, x, z, scale, rotY) {
       const g = new THREE.Group();
-      const trunkH = 2.4 + Math.random() * 1.2;
-      const trunk = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.35, 0.5, trunkH, 6),
-        new THREE.MeshStandardMaterial({ color: 0x3a2a22, roughness: 1 })
-      );
-      trunk.position.y = trunkH / 2;
-      trunk.castShadow = true;
-      g.add(trunk);
-
-      const layers = 3;
-      for (let i = 0; i < layers; i++) {
-        const r = 2.4 - i * 0.55;
-        const cone = new THREE.Mesh(
-          new THREE.ConeGeometry(r, 2.0, 7),
-          new THREE.MeshStandardMaterial({ color: 0x274736, roughness: 1 })
+      if (path.indexOf("Rock") !== -1) {
+        const s = 1.2 * scale;
+        const rock = new THREE.Mesh(
+          new THREE.DodecahedronGeometry(s, 0),
+          new THREE.MeshStandardMaterial({ color: 0x4a4a55, roughness: 1, flatShading: true })
         );
-        cone.position.y = trunkH + i * 1.2;
-        cone.castShadow = true;
-        g.add(cone);
+        rock.position.y = s * 0.5;
+        rock.rotation.set(Math.random(), Math.random(), Math.random());
+        rock.castShadow = true;
+        g.add(rock);
+      } else if (path.indexOf("Bush") !== -1) {
+        const s = 0.8 * scale;
+        const bush = new THREE.Mesh(
+          new THREE.SphereGeometry(s, 8, 6),
+          new THREE.MeshStandardMaterial({ color: 0x2f5a34, roughness: 1, flatShading: true })
+        );
+        bush.position.y = s * 0.6;
+        bush.scale.y = 0.7;
+        bush.castShadow = true;
+        g.add(bush);
+      } else { // CommonTree / Pine
+        const trunkH = 3.0 * scale;
+        const trunk = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.35 * scale, 0.5 * scale, trunkH, 6),
+          new THREE.MeshStandardMaterial({ color: 0x3a2a22, roughness: 1 })
+        );
+        trunk.position.y = trunkH / 2;
+        trunk.castShadow = true;
+        g.add(trunk);
+        for (let i = 0; i < 3; i++) {
+          const r = (2.4 - i * 0.55) * scale;
+          const cone = new THREE.Mesh(
+            new THREE.ConeGeometry(r, 2.0 * scale, 7),
+            new THREE.MeshStandardMaterial({ color: 0x274736, roughness: 1 })
+          );
+          cone.position.y = trunkH + i * 1.2 * scale;
+          cone.castShadow = true;
+          g.add(cone);
+        }
       }
       g.position.set(x, 0, z);
-      scene.add(g);
-      obstacles.push({ x: x, z: z, radius: 1.4 });
+      g.rotation.y = rotY;
+      return g;
     }
 
-    function makeRock(x, z) {
-      const s = 0.9 + Math.random() * 1.6;
-      const rock = new THREE.Mesh(
-        new THREE.DodecahedronGeometry(s, 0),
-        new THREE.MeshStandardMaterial({ color: 0x4a4a55, roughness: 1, flatShading: true })
+    // Load a GLB and place it; on failure, silently fall back to a primitive.
+    function loadAndPlaceAsset(path, x, z, scale, rotY) {
+      envLoader.load(
+        path,
+        function (gltf) {
+          const obj = gltf.scene;
+          obj.position.set(x, 0, z);
+          obj.scale.setScalar(scale);
+          obj.rotation.y = rotY;
+          obj.traverse(function (o) { if (o.isMesh) o.castShadow = true; });
+          scene.add(obj);
+        },
+        undefined,
+        function () {
+          scene.add(makeFallback(path, x, z, scale, rotY));
+        }
       );
-      rock.position.set(x, s * 0.5, z);
-      rock.rotation.set(Math.random(), Math.random(), Math.random());
-      rock.castShadow = true;
-      rock.receiveShadow = true;
-      scene.add(rock);
-      obstacles.push({ x: x, z: z, radius: s * 0.9 });
     }
 
-    // place a handful of landmarks (kept clear of the centre where Saga spawns)
+    // Same landmark positions as before; distribute tree/rock variants across them.
+    const treeModels = ["CommonTree_1.glb", "CommonTree_3.glb", "Pine_3.glb"];
+    const rockModels = ["Rock_Medium_1.glb", "Rock_Medium_3.glb"];
     const landmarkSpots = [
       [-22, -14, "tree"], [18, -26, "tree"], [34, 10, "tree"],
       [-30, 22, "tree"], [8, 32, "tree"], [-12, -34, "tree"],
       [26, 28, "rock"], [-38, -6, "rock"], [14, 6, "rock"], [-6, 24, "rock"]
     ];
+    let treeIdx = 0, rockIdx = 0;
     landmarkSpots.forEach(function (s) {
-      if (s[2] === "tree") makeTree(s[0], s[1]);
-      else makeRock(s[0], s[1]);
+      const x = s[0], z = s[1];
+      const scale = randRange(0.8, 1.2);
+      const rotY = randRange(0, Math.PI * 2);
+      if (s[2] === "tree") {
+        loadAndPlaceAsset(treeModels[treeIdx++ % treeModels.length], x, z, scale, rotY);
+        obstacles.push({ x: x, z: z, radius: 1.4 });
+      } else {
+        loadAndPlaceAsset(rockModels[rockIdx++ % rockModels.length], x, z, scale, rotY);
+        obstacles.push({ x: x, z: z, radius: 0.9 });
+      }
+    });
+
+    // Bushes sprinkled between the trees (decorative — no collision).
+    const bushSpots = [[-25, 8], [4, -18], [22, -4], [-15, -22], [30, 18], [0, 16]];
+    bushSpots.forEach(function (p) {
+      loadAndPlaceAsset("Bush_Common.glb", p[0], p[1], randRange(0.8, 1.2), randRange(0, Math.PI * 2));
     });
 
     // ----------------------------------------------------------------------
