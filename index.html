@@ -163,7 +163,6 @@
   </script>
   <script type="module">
   import * as THREE from "three";
-  import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/loaders/GLTFLoader.js";
   import { EffectComposer } from "https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/postprocessing/EffectComposer.js";
   import { RenderPass } from "https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/postprocessing/RenderPass.js";
   import { OutlinePass } from "https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/postprocessing/OutlinePass.js";
@@ -192,9 +191,8 @@
     let won = false;
     const keys = {};
 
-    // Animation scaffolding (for a future GLTF character via GLTFLoader)
+    // Frame clock for procedural animation timing
     const clock = new THREE.Clock();
-    let mixer = null;
 
     // ----------------------------------------------------------------------
     // Renderer / Scene / Camera
@@ -506,50 +504,101 @@
     sagaGlow.position.set(0, 1.2, 0);
     saga.add(sagaGlow);
 
-    // Saga is loaded from Saga.glb (skinned + animated). The native model
-    // stands ~3.75 units tall, so scale her down to a small child.
-    const MODEL_SCALE = 0.45;
-    // If she walks backwards / faces the wrong way, flip this to Math.PI.
-    const MODEL_FACING_OFFSET = 0;
-    let idleAction = null;
-    let walkAction = null;
+    // ----------------------------------------------------------------------
+    // Saga — procedural cel-shaded girl (light blue gown, blonde hair, barefoot)
+    // Child proportions: big head, short limbs. Built facing +Z. ~1.7 tall.
+    // ----------------------------------------------------------------------
+    const SKIN = 0xf5c9a0, GOWN = 0xa8cfe0, HAIR = 0xfff0c0;
 
-    const gltfLoader = new GLTFLoader();
-    gltfLoader.load(
-      "Saga.glb",
-      function (gltf) {
-        const model = gltf.scene;
-        model.scale.setScalar(MODEL_SCALE);
-        model.rotation.y = MODEL_FACING_OFFSET;
-        model.traverse(function (o) {
-          if (o.isMesh) {
-            o.castShadow = true;
-            // skinned meshes can be wrongly culled once posed — keep her visible
-            o.frustumCulled = false;
-          }
-        });
-        saga.add(model);
-        outlinePass.selectedObjects.push(model);
-        console.log("[outline] selectedObjects count:", outlinePass.selectedObjects.length);
+    function toonPart(geo, color, cast) {
+      const m = new THREE.Mesh(geo, new THREE.MeshToonMaterial({ color: color }));
+      if (cast !== false) m.castShadow = true;
+      return m;
+    }
 
-        mixer = new THREE.AnimationMixer(model);
-        const idle = THREE.AnimationClip.findByName(gltf.animations, "Idle");
-        const walk = THREE.AnimationClip.findByName(gltf.animations, "Walk");
-        if (idle) {
-          idleAction = mixer.clipAction(idle);
-          idleAction.play();
-        }
-        if (walk) {
-          walkAction = mixer.clipAction(walk);
-          walkAction.play();
-          walkAction.setEffectiveWeight(0); // idle by default, faded in by speed
-        }
-      },
-      undefined,
-      function (err) {
-        console.error("Could not load Saga.glb:", err);
-      }
+    const sagaMesh = new THREE.Group();
+
+    // Legs — each a group pivoted at the hip so it can swing about rotation.x.
+    function makeLeg(side) {
+      const leg = new THREE.Group();
+      leg.position.set(side * 0.075, 0.36, 0); // slight gap between legs
+      const shin = toonPart(new THREE.CylinderGeometry(0.06, 0.055, 0.32, 12), SKIN);
+      shin.position.y = -0.16;
+      leg.add(shin);
+      const foot = toonPart(new THREE.SphereGeometry(0.07, 12, 8), SKIN);
+      foot.scale.set(1, 0.5, 1.4); // flattened, pointing forward
+      foot.position.set(0, -0.33, 0.04);
+      leg.add(foot);
+      return leg;
+    }
+    const legL = makeLeg(-1), legR = makeLeg(1);
+    sagaMesh.add(legL, legR);
+
+    // Gown — skirt (trapezoid) + body (trapezoid).
+    const skirt = toonPart(new THREE.CylinderGeometry(0.22, 0.30, 0.35, 20), GOWN);
+    skirt.position.y = 0.50;
+    sagaMesh.add(skirt);
+    const body = toonPart(new THREE.CylinderGeometry(0.18, 0.22, 0.55, 20), GOWN);
+    body.position.y = 0.92;
+    sagaMesh.add(body);
+
+    // Arms — group pivoted at the shoulder; upper (gown) + forearm (skin) child.
+    function makeArm(side) {
+      const arm = new THREE.Group();
+      arm.position.set(side * 0.21, 1.13, 0);
+      arm.rotation.z = side * 0.3; // angled slightly outward/down at rest
+      const upper = toonPart(new THREE.CylinderGeometry(0.055, 0.055, 0.28, 12), GOWN);
+      upper.position.y = -0.14;
+      arm.add(upper);
+      const fore = toonPart(new THREE.CylinderGeometry(0.045, 0.045, 0.22, 12), SKIN);
+      fore.position.y = -0.39;
+      arm.add(fore);
+      return arm;
+    }
+    const upperArmL = makeArm(-1), upperArmR = makeArm(1);
+    sagaMesh.add(upperArmL, upperArmR);
+
+    // Neck + head.
+    const neck = toonPart(new THREE.CylinderGeometry(0.07, 0.07, 0.12, 12), SKIN);
+    neck.position.y = 1.24;
+    sagaMesh.add(neck);
+    const head = toonPart(new THREE.SphereGeometry(0.22, 24, 18), SKIN);
+    head.scale.y = 0.95;
+    head.position.y = 1.48;
+    sagaMesh.add(head);
+
+    // Hair — flattened cap + two flows over the shoulders.
+    const hairCap = toonPart(
+      new THREE.SphereGeometry(0.23, 24, 16, 0, Math.PI * 2, 0, Math.PI / 2), HAIR
     );
+    hairCap.scale.y = 0.6;
+    hairCap.position.y = 1.50;
+    sagaMesh.add(hairCap);
+    const hairL = toonPart(new THREE.CylinderGeometry(0.09, 0.06, 0.45, 10), HAIR);
+    hairL.position.set(-0.17, 1.30, -0.02);
+    hairL.rotation.z = 0.22;
+    sagaMesh.add(hairL);
+    const hairR = toonPart(new THREE.CylinderGeometry(0.09, 0.06, 0.45, 10), HAIR);
+    hairR.position.set(0.17, 1.30, -0.02);
+    hairR.rotation.z = -0.22;
+    sagaMesh.add(hairR);
+
+    // Face — flat circles on the front (+Z) of the head.
+    const eyeMat = new THREE.MeshToonMaterial({ color: 0x333333 });
+    const eyeL = new THREE.Mesh(new THREE.CircleGeometry(0.025, 14), eyeMat);
+    eyeL.position.set(-0.08, 1.50, 0.205);
+    const eyeR = new THREE.Mesh(new THREE.CircleGeometry(0.025, 14), eyeMat);
+    eyeR.position.set(0.08, 1.50, 0.205);
+    const mouth = new THREE.Mesh(
+      new THREE.CircleGeometry(0.015, 12),
+      new THREE.MeshToonMaterial({ color: 0x8b6355 })
+    );
+    mouth.position.set(0, 1.43, 0.212);
+    sagaMesh.add(eyeL, eyeR, mouth);
+
+    saga.add(sagaMesh);
+    outlinePass.selectedObjects.push(sagaMesh);
+    console.log("[outline] selectedObjects count:", outlinePass.selectedObjects.length);
 
     // ----------------------------------------------------------------------
     // Donation hearts
@@ -902,6 +951,7 @@
     // Main loop
     // ----------------------------------------------------------------------
     let last = performance.now();
+    let walkCycle = 0;
 
     function animate(now) {
       requestAnimationFrame(animate);
@@ -909,7 +959,6 @@
       last = now;
 
       const delta = clock.getDelta();
-      if (mixer) mixer.update(delta);
 
       const healthFrac = health / MAX_HEALTH;          // 0.1 .. 1.0
       // speed scales with health: slow & heavy when weak, free when strong
@@ -961,14 +1010,23 @@
       while (da < -Math.PI) da += Math.PI * 2;
       saga.rotation.y += da * Math.min(1, 10 * dt);
 
-      // --- drive the GLB character: crossfade Idle <-> Walk by speed,
-      //     and scale animation energy with health (weak = sluggish) ---
+      // --- procedural walk animation; pace & energy scale with health ---
       const horizSpeed = Math.sqrt(sagaVel.x * sagaVel.x + sagaVel.z * sagaVel.z);
-      if (mixer) mixer.timeScale = 0.55 + healthFrac * 0.85;
-      const moveAmt = Math.min(1, horizSpeed / 2.5);
-      if (idleAction && walkAction) {
-        walkAction.setEffectiveWeight(moveAmt);
-        idleAction.setEffectiveWeight(1 - moveAmt);
+      if (horizSpeed > 0.15) {
+        walkCycle += delta * speed * healthFrac;
+        const sw = Math.sin(walkCycle);
+        upperArmL.rotation.x = sw * 0.35;
+        upperArmR.rotation.x = -sw * 0.35;
+        legL.rotation.x = sw * 0.4;
+        legR.rotation.x = -sw * 0.4;
+        sagaMesh.position.y = Math.abs(Math.sin(walkCycle)) * 0.04;
+      } else {
+        // idle: ease limbs back to a natural hang, no swing
+        upperArmL.rotation.x *= 0.8;
+        upperArmR.rotation.x *= 0.8;
+        legL.rotation.x *= 0.8;
+        legR.rotation.x *= 0.8;
+        sagaMesh.position.y *= 0.8;
       }
 
       // --- donation hearts float + spin, proximity collect ---
