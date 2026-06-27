@@ -164,6 +164,11 @@
   <script type="module">
   import * as THREE from "three";
   import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/loaders/GLTFLoader.js";
+  import { EffectComposer } from "https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/postprocessing/EffectComposer.js";
+  import { RenderPass } from "https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/postprocessing/RenderPass.js";
+  import { OutlinePass } from "https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/postprocessing/OutlinePass.js";
+  import { ShaderPass } from "https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/postprocessing/ShaderPass.js";
+  import { FXAAShader } from "https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/shaders/FXAAShader.js";
 
   (function () {
     "use strict";
@@ -260,6 +265,36 @@
     // soft sky/ground fill
     const hemi = new THREE.HemisphereLight(0x87ceeb, 0x7ab648, 0.4);
     scene.add(hemi);
+
+    // ----------------------------------------------------------------------
+    // Post-processing — cel-style ink outlines (EffectComposer + OutlinePass)
+    // ----------------------------------------------------------------------
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+
+    const outlinePass = new OutlinePass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight), scene, camera
+    );
+    outlinePass.edgeStrength = 3.0;
+    outlinePass.edgeGlow = 0.0;
+    outlinePass.edgeThickness = 1.0;
+    outlinePass.pulsePeriod = 0;
+    outlinePass.visibleEdgeColor.set("#1b3a2b"); // soft dark ink
+    outlinePass.hiddenEdgeColor.set("#1b3a2b");
+    outlinePass.selectedObjects = []; // filled as trees / Saga are created
+    composer.addPass(outlinePass);
+
+    const fxaaPass = new ShaderPass(FXAAShader);
+    composer.addPass(fxaaPass);
+
+    function resizePostFX() {
+      const w = window.innerWidth, h = window.innerHeight;
+      const pr = renderer.getPixelRatio();
+      composer.setSize(w, h);
+      outlinePass.setSize(w, h);
+      fxaaPass.material.uniforms["resolution"].value.set(1 / (w * pr), 1 / (h * pr));
+    }
+    resizePostFX();
 
     const randRange = function (a, b) { return a + Math.random() * (b - a); };
 
@@ -437,6 +472,7 @@
         t.rotation.y = randRange(0, Math.PI * 2);
         t.scale.setScalar(randRange(0.85, 1.15));
         scene.add(t);
+        outlinePass.selectedObjects.push(t);
         obstacles.push({ x: x, z: z, radius: 1.4 });
       } else {
         const r = makeRock();
@@ -445,6 +481,8 @@
         obstacles.push({ x: x, z: z, radius: 0.9 });
       }
     });
+
+    console.log("[outline] tree targets:", outlinePass.selectedObjects.length);
 
     // Bushes sprinkled between the trees (decorative — no collision).
     const bushSpots = [[-25, 8], [4, -18], [22, -4], [-15, -22], [30, 18], [0, 16]];
@@ -491,6 +529,8 @@
           }
         });
         saga.add(model);
+        outlinePass.selectedObjects.push(model);
+        console.log("[outline] selectedObjects count:", outlinePass.selectedObjects.length);
 
         mixer = new THREE.AnimationMixer(model);
         const idle = THREE.AnimationClip.findByName(gltf.animations, "Idle");
@@ -968,7 +1008,7 @@
       camera.position.lerp(desired, Math.min(1, 4 * dt));
       camera.lookAt(saga.position.x, saga.position.y + targetY, saga.position.z);
 
-      renderer.render(scene, camera);
+      composer.render();
     }
 
     // ----------------------------------------------------------------------
@@ -978,6 +1018,7 @@
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
+      resizePostFX();
     });
 
     // ----------------------------------------------------------------------
