@@ -515,6 +515,10 @@
     // If she walks backwards / faces the wrong way, set this to Math.PI.
     const MODEL_FACING_OFFSET = 0;
 
+    // Animation actions + current state (assigned once the GLB loads).
+    let idleAction = null, tiredAction = null, walkAction = null, runAction = null;
+    let currentAnim = null;
+
     const gltfLoader = new GLTFLoader();
     gltfLoader.load(
       "merged-model.glb",
@@ -527,25 +531,39 @@
             o.castShadow = true;
             o.frustumCulled = false; // skinned meshes can be wrongly culled
             const src = o.material;
-            o.material = new THREE.MeshToonMaterial({
-              map: src && src.map ? src.map : null, // keep the GLB texture
-              gradientMap: null                      // flat toon look
-            });
+            // Lambert responds to scene lights (toon was rendering unlit/black).
+            o.material = (src && src.map)
+              ? new THREE.MeshLambertMaterial({ map: src.map })
+              : new THREE.MeshLambertMaterial({ color: (src && src.color) ? src.color : 0xffffff });
             if (src && src.dispose) src.dispose();
           }
         });
+
+        // Drop her so her feet rest on the ground (bbox bottom -> y = 0).
+        const box = new THREE.Box3().setFromObject(model);
+        model.position.y = -box.min.y;
+
         saga.add(model);
         outlinePass.selectedObjects.push(model);
 
         mixer = new THREE.AnimationMixer(model);
         gltf.animations.forEach(function (a) { console.log(a.name); });
-        // The first clip is a death animation; default to a calm locomotion
-        // loop instead so she isn't permanently face-planting.
-        const clips = gltf.animations;
-        const def = clips.find(function (c) { return /walk/i.test(c.name); })
-          || clips.find(function (c) { return /idle/i.test(c.name); })
-          || clips[0];
-        if (def) mixer.clipAction(def).play();
+
+        // Match clips by name prefix — the GLB suffixes them (e.g. "Idle_1",
+        // "Walking_6"), so exact-name lookups would miss after re-export.
+        const findAction = function (re) {
+          const c = gltf.animations.find(function (a) { return re.test(a.name); });
+          return c ? mixer.clipAction(c) : null;
+        };
+        idleAction = findAction(/^idle/i);
+        tiredAction = findAction(/tired/i);
+        walkAction = findAction(/walk/i);
+        runAction = findAction(/^running_/i); // "Running_*" but not "Running Tired"
+
+        if (idleAction) {
+          idleAction.play();
+          currentAnim = idleAction;
+        }
       },
       undefined,
       function (err) {
@@ -949,6 +967,9 @@
         // friction
         sagaVel.x -= sagaVel.x * Math.min(1, 8 * dt);
         sagaVel.z -= sagaVel.z * Math.min(1, 8 * dt);
+        // snap tiny residual velocity to zero so the idle state can trigger
+        if (Math.abs(sagaVel.x) < 0.02) sagaVel.x = 0;
+        if (Math.abs(sagaVel.z) < 0.02) sagaVel.z = 0;
       }
 
       let nx = saga.position.x + sagaVel.x * dt;
@@ -963,7 +984,21 @@
       while (da < -Math.PI) da += Math.PI * 2;
       saga.rotation.y += da * Math.min(1, 10 * dt);
 
-      // Saga's animation is driven by the GLB AnimationMixer (updated above).
+      // --- animation state machine (speed-driven, crossfaded) ---
+      const horizSpeed = Math.sqrt(sagaVel.x * sagaVel.x + sagaVel.z * sagaVel.z);
+      if (mixer) {
+        mixer.timeScale = Math.max(0.35, healthFrac); // weak = slower motion
+        let next;
+        if (horizSpeed === 0) next = idleAction;
+        else if (horizSpeed <= 3) next = tiredAction;
+        else if (horizSpeed <= 8) next = walkAction;
+        else next = runAction;
+        if (next && next !== currentAnim) {
+          next.reset().play();
+          if (currentAnim) currentAnim.crossFadeTo(next, 0.2, false);
+          currentAnim = next;
+        }
+      }
 
       // --- donation hearts float + spin, proximity collect ---
       const tsec = now / 1000;
