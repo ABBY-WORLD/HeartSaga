@@ -248,10 +248,10 @@
     // ----------------------------------------------------------------------
     // Lights
     // ----------------------------------------------------------------------
-    const ambient = new THREE.AmbientLight(0xfff4e0, 0.7); // warm fill
+    const ambient = new THREE.AmbientLight(0xfff4e0, 0.4); // warm fill
     scene.add(ambient);
 
-    const dir = new THREE.DirectionalLight(0xfff8dc, 1.2);  // warm sun
+    const dir = new THREE.DirectionalLight(0xfff8dc, 0.8);  // warm sun
     dir.position.set(60, 80, 40);
     dir.castShadow = true;
     dir.shadow.mapSize.set(2048, 2048);
@@ -507,12 +507,6 @@
     sagaGlow.position.set(0, 1.2, 0);
     saga.add(sagaGlow);
 
-    // dedicated fill light for the character (kept moderate — the real cause
-    // of the "black" model was missing normals, fixed at load via
-    // computeVertexNormals; this just guarantees she's well lit)
-    const sagaLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.5);
-    saga.add(sagaLight);
-
     // ----------------------------------------------------------------------
     // Saga — animated GLB character (merged-model.glb)
     // ----------------------------------------------------------------------
@@ -611,8 +605,13 @@
       else if (hs <= 8) next = walkAction;            // walk unlocked >= 0.4
       else next = (hf >= 0.7) ? runAction : walkAction; // run unlocked >= 0.7
       if (next && next !== currentAnim) {
-        next.reset().play();
-        if (currentAnim) currentAnim.crossFadeTo(next, 0.2, false);
+        next.reset();
+        next.enabled = true;
+        next.play();
+        if (currentAnim) {
+          next.syncWith(currentAnim);             // align phase → no foot pop
+          currentAnim.crossFadeTo(next, 0.3, false);
+        }
         currentAnim = next;
       }
     }
@@ -986,8 +985,8 @@
 
       const healthFrac = health / MAX_HEALTH;          // 0.1 .. 1.0
       // speed scales with health: slow & heavy when weak, free when strong.
-      // ×0.7: reduced 30% so she doesn't outpace her own footstep animation.
-      const speed = (2.4 + healthFrac * 7.0) * 0.7;    // units/sec
+      // ×0.63: reduced ~37% total (0.7 × 0.9) so she doesn't outpace her legs.
+      const speed = (2.4 + healthFrac * 7.0) * 0.63;   // units/sec
 
       // --- input -> desired direction (camera relative) ---
       let ix = 0, iz = 0;
@@ -1043,10 +1042,15 @@
       evaluateAnimState();
       if (currentAnim) {
         // Locomotion playback tracks ground speed so the feet match the floor
-        // (tune 0.35). Idle keeps steady playback — speed 0 would freeze it.
+        // (tune 0.7). Idle keeps steady playback — speed 0 would freeze it.
         currentAnim.setEffectiveTimeScale(
-          currentAnim === idleAction ? 1.0 : Math.max(0.1, horizSpeed * 0.35)
+          currentAnim === idleAction ? 1.0 : Math.max(0.1, horizSpeed * 0.7)
         );
+        // disable any action that has fully faded out, so stray residual
+        // weights can't blend in and cause walk-cycle hitches
+        [idleAction, tiredAction, walkAction, runAction].forEach(function (a) {
+          if (a && a !== currentAnim && a.getEffectiveWeight() < 0.01) a.enabled = false;
+        });
       }
 
       // --- donation hearts float + spin, proximity collect ---
