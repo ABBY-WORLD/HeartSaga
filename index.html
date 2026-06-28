@@ -183,6 +183,7 @@
     const TOTAL_HEARTS = 8;        // donation hearts in world
     const WORLD_SIZE = 90;         // half-extent of playable area
     const COLLECT_RADIUS = 2.2;
+    const BASE_MOVE_SPEED = 4.0;   // base walk speed (scaled per heart state)
 
     // ----------------------------------------------------------------------
     // State
@@ -462,7 +463,11 @@
     const landmarkSpots = [
       [-22, -14, "tree"], [18, -26, "tree"], [34, 10, "tree"],
       [-30, 22, "tree"], [8, 32, "tree"], [-12, -34, "tree"],
-      [26, 28, "rock"], [-38, -6, "rock"], [14, 6, "rock"], [-6, 24, "rock"]
+      // additional trees, spread further out (12 trees total)
+      [24, 4, "tree"], [-26, -20, "tree"], [16, -16, "tree"],
+      [-18, 28, "tree"], [28, -30, "tree"], [-28, 8, "tree"],
+      [26, 28, "rock"], [-38, -6, "rock"], [14, 6, "rock"], [-6, 24, "rock"],
+      [20, -6, "rock"], [-22, 18, "rock"] // 6 rocks total
     ];
     let treeIdx = 0;
     landmarkSpots.forEach(function (s) {
@@ -471,13 +476,14 @@
         const t = treeBuilders[treeIdx++ % treeBuilders.length]();
         t.position.set(x, 0, z);
         t.rotation.y = randRange(0, Math.PI * 2);
-        t.scale.setScalar(randRange(0.85, 1.15));
+        t.scale.setScalar(randRange(2.5, 3.5)); // much bigger trees
         scene.add(t);
         outlinePass.selectedObjects.push(t);
         obstacles.push({ x: x, z: z, radius: 1.4 });
       } else {
         const r = makeRock();
         r.position.set(x, 0, z);
+        r.scale.setScalar(randRange(1.5, 2.2)); // bigger rocks
         scene.add(r);
         obstacles.push({ x: x, z: z, radius: 0.9 });
       }
@@ -580,6 +586,14 @@
         tiredAction = findAction(/tired/i);
         walkAction = findAction(/walk/i);
         runAction = findAction(/^running_/i); // "Running_*" but not "Running Tired"
+
+        // The tired clip pops at its loop point — trim the last 10% so it
+        // repeats on the clean part of the cycle.
+        if (tiredAction) {
+          tiredAction.getClip().duration *= 0.9;
+          tiredAction.clampWhenFinished = false;
+          tiredAction.setLoop(THREE.LoopRepeat, Infinity);
+        }
 
         // Loop mode on all clips, but only idle plays at load — the other
         // actions are started lazily when first crossfaded to.
@@ -1024,9 +1038,9 @@
       }
 
       const healthFrac = health / MAX_HEALTH;          // 0.1 .. 1.0
-      // speed scales with health: slow & heavy when weak, free when strong.
-      // ×0.63: reduced ~37% total (0.7 × 0.9) so she doesn't outpace her legs.
-      const speed = (2.4 + healthFrac * 7.0) * 0.63;   // units/sec
+      // movement speed scales with heart progression: tired / walk / run
+      const heartSpeedMul = collected >= 5 ? 1.5 : (collected >= 3 ? 1.0 : 0.7);
+      const speed = BASE_MOVE_SPEED * heartSpeedMul;   // units/sec
 
       // --- input -> desired direction (camera relative) ---
       let ix = 0, iz = 0;
