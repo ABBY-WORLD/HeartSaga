@@ -579,8 +579,18 @@
         walkAction = findAction(/walk/i);
         runAction = findAction(/^running_/i); // "Running_*" but not "Running Tired"
 
+        // Play every action up front at weight 0 and let crossFadeTo ramp the
+        // weights. Each clip keeps looping on its own phase, so transitions
+        // never restart a cycle mid-step (that restart was the hitch).
+        [idleAction, tiredAction, walkAction, runAction].forEach(function (a) {
+          if (a) {
+            a.setLoop(THREE.LoopRepeat, Infinity);
+            a.play();
+            a.setEffectiveWeight(0);
+          }
+        });
         if (idleAction) {
-          idleAction.play();
+          idleAction.setEffectiveWeight(1);
           currentAnim = idleAction;
         }
       },
@@ -597,21 +607,16 @@
     function evaluateAnimState() {
       if (!mixer) return;
       const hs = Math.sqrt(sagaVel.x * sagaVel.x + sagaVel.z * sagaVel.z);
-      const hf = health / MAX_HEALTH;
+      // Locomotion clip is gated by hearts collected; idle when standing still.
       let next;
-      if (hs === 0) next = idleAction;
-      else if (hf < 0.4) next = tiredAction;          // too weak to walk/run
-      else if (hs <= 3) next = tiredAction;
-      else if (hs <= 8) next = walkAction;            // walk unlocked >= 0.4
-      else next = (hf >= 0.7) ? runAction : walkAction; // run unlocked >= 0.7
+      if (hs < 0.02) next = idleAction;            // standing still
+      else if (collected <= 2) next = tiredAction; // 0-2 hearts
+      else if (collected <= 4) next = walkAction;  // 3-4 hearts
+      else next = runAction;                       // 5+ hearts
       if (next && next !== currentAnim) {
-        next.reset();
-        next.enabled = true;
-        next.play();
-        if (currentAnim) {
-          next.syncWith(currentAnim);             // align phase → no foot pop
-          currentAnim.crossFadeTo(next, 0.3, false);
-        }
+        // Both actions are already playing — just cross-fade their weights,
+        // warping (true) to smooth the step-speed difference. No reset/sync.
+        if (currentAnim) currentAnim.crossFadeTo(next, 0.3, true);
         currentAnim = next;
       }
     }
@@ -1097,11 +1102,6 @@
         currentAnim.setEffectiveTimeScale(
           currentAnim === idleAction ? 1.0 : Math.max(0.1, horizSpeed * 0.7)
         );
-        // disable any action that has fully faded out, so stray residual
-        // weights can't blend in and cause walk-cycle hitches
-        [idleAction, tiredAction, walkAction, runAction].forEach(function (a) {
-          if (a && a !== currentAnim && a.getEffectiveWeight() < 0.01) a.enabled = false;
-        });
       }
 
       // --- donation hearts float + spin, proximity collect ---
