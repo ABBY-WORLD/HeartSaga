@@ -985,8 +985,9 @@
       }
 
       const healthFrac = health / MAX_HEALTH;          // 0.1 .. 1.0
-      // speed scales with health: slow & heavy when weak, free when strong
-      const speed = 2.4 + healthFrac * 7.0;            // units/sec
+      // speed scales with health: slow & heavy when weak, free when strong.
+      // ×0.7: reduced 30% so she doesn't outpace her own footstep animation.
+      const speed = (2.4 + healthFrac * 7.0) * 0.7;    // units/sec
 
       // --- input -> desired direction (camera relative) ---
       let ix = 0, iz = 0;
@@ -1041,8 +1042,11 @@
       const horizSpeed = Math.sqrt(sagaVel.x * sagaVel.x + sagaVel.z * sagaVel.z);
       evaluateAnimState();
       if (currentAnim) {
-        const animSpeed = Math.max(0.3, horizSpeed / 5.0);
-        currentAnim.setEffectiveTimeScale(animSpeed * healthFrac);
+        // Locomotion playback tracks ground speed so the feet match the floor
+        // (tune 0.35). Idle keeps steady playback — speed 0 would freeze it.
+        currentAnim.setEffectiveTimeScale(
+          currentAnim === idleAction ? 1.0 : Math.max(0.1, horizSpeed * 0.35)
+        );
       }
 
       // --- donation hearts float + spin, proximity collect ---
