@@ -134,6 +134,32 @@
     max-width: 520px;
   }
   .hidden { display: none !important; }
+
+  /* Developer panel */
+  #devPanel {
+    position: fixed; top: 8px; left: 8px; z-index: 1000; width: 240px;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 11px; color: #fff; pointer-events: none;
+  }
+  #devToggle {
+    width: 28px; height: 28px; border: none; border-radius: 4px;
+    background: rgba(0,0,0,0.75); color: #fff; font-size: 15px;
+    cursor: pointer; pointer-events: auto; line-height: 28px; padding: 0;
+  }
+  #devPanel .dev-body {
+    display: none; margin-top: 6px; padding: 8px 10px; pointer-events: auto;
+    background: rgba(0,0,0,0.75); border-radius: 6px;
+    max-height: 85vh; overflow-y: auto;
+  }
+  #devPanel.open .dev-body { display: block; }
+  #devPanel .dev-header {
+    font-weight: bold; letter-spacing: 0.08em; opacity: 0.65;
+    margin: 9px 0 3px; border-bottom: 1px solid rgba(255,255,255,0.15);
+  }
+  #devPanel .dev-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  #devPanel .dev-row label { flex: 0 0 76px; opacity: 0.85; }
+  #devPanel .dev-row input[type="range"] { flex: 1; min-width: 0; }
+  #devPanel .dev-val { flex: 0 0 32px; text-align: right; opacity: 0.7; }
 </style>
 </head>
 <body>
@@ -183,7 +209,7 @@
     const TOTAL_HEARTS = 8;        // donation hearts in world
     const WORLD_SIZE = 90;         // half-extent of playable area
     const COLLECT_RADIUS = 2.2;
-    const BASE_MOVE_SPEED = 4.0;   // base walk speed (scaled per heart state)
+    let baseMoveSpeed = 4.5;       // base walk speed (scaled per heart state, dev-tunable)
 
     // ----------------------------------------------------------------------
     // State
@@ -192,6 +218,8 @@
     let collected = 0;
     let started = false;
     let won = false;
+    let sfxEnabled = true;   // blip on heart collect (dev-tunable)
+    let musicEnabled = false; // ambient music toggle (not wired to audio yet)
     const keys = {};
 
     // Frame clock + animation mixer for the GLB character
@@ -243,7 +271,7 @@
     // far plane raised from 400 so the radius-400 sky dome isn't clipped;
     // camera follow / controls are otherwise unchanged.
     const camera = new THREE.PerspectiveCamera(
-      55, window.innerWidth / window.innerHeight, 0.1, 1000
+      60, window.innerWidth / window.innerHeight, 0.1, 1000
     );
 
     // ----------------------------------------------------------------------
@@ -458,38 +486,56 @@
       return g;
     }
 
-    // Same landmark positions / obstacle radii as before.
     const treeBuilders = [makeCommonTree, makePine, makeTwistedTree];
-    const landmarkSpots = [
-      [-22, -14, "tree"], [18, -26, "tree"], [34, 10, "tree"],
-      [-30, 22, "tree"], [8, 32, "tree"], [-12, -34, "tree"],
-      // additional trees, spread further out (12 trees total)
-      [24, 4, "tree"], [-26, -20, "tree"], [16, -16, "tree"],
-      [-18, 28, "tree"], [28, -30, "tree"], [-28, 8, "tree"],
-      [26, 28, "rock"], [-38, -6, "rock"], [14, 6, "rock"], [-6, 24, "rock"],
-      [20, -6, "rock"], [-22, 18, "rock"] // 6 rocks total
+
+    // Rocks (static placement).
+    const rockSpots = [
+      [26, 28], [-38, -6], [14, 6], [-6, 24], [20, -6], [-22, 18]
     ];
-    let treeIdx = 0;
-    landmarkSpots.forEach(function (s) {
-      const x = s[0], z = s[1];
-      if (s[2] === "tree") {
-        const t = treeBuilders[treeIdx++ % treeBuilders.length]();
-        t.position.set(x, 0, z);
-        t.rotation.y = randRange(0, Math.PI * 2);
-        t.scale.setScalar(randRange(2.5, 3.5)); // much bigger trees
-        scene.add(t);
-        outlinePass.selectedObjects.push(t);
-        obstacles.push({ x: x, z: z, radius: 1.4 });
-      } else {
-        const r = makeRock();
-        r.position.set(x, 0, z);
-        r.scale.setScalar(randRange(1.5, 2.2)); // bigger rocks
-        scene.add(r);
-        obstacles.push({ x: x, z: z, radius: 0.9 });
-      }
+    rockSpots.forEach(function (p) {
+      const r = makeRock();
+      r.position.set(p[0], 0, p[1]);
+      r.scale.setScalar(randRange(1.5, 2.2));
+      scene.add(r);
+      obstacles.push({ x: p[0], z: p[1], radius: 0.9 });
     });
 
-    console.log("[outline] tree targets:", outlinePass.selectedObjects.length);
+    // Trees — rebuildable so the dev panel can change count / scale live.
+    // Pool of 20 spread-out positions (kept clear of Saga's centre spawn).
+    const treeSpots = [
+      [-22, -14], [18, -26], [34, 10], [-30, 22], [8, 32], [-12, -34],
+      [24, 4], [-26, -20], [16, -16], [-18, 28], [28, -30], [-28, 8],
+      [40, -10], [-40, 12], [12, 44], [-8, -44], [44, 26], [-44, -26],
+      [6, -10], [-6, 42]
+    ];
+    const treePool = [];      // { group, obstacle }
+    let treeCount = 10;       // dev-tunable
+    let treeScaleVal = 3.0;   // dev-tunable
+
+    function rebuildTrees() {
+      treePool.forEach(function (t) {
+        scene.remove(t.group);
+        const oi = obstacles.indexOf(t.obstacle);
+        if (oi >= 0) obstacles.splice(oi, 1);
+        const si = outlinePass.selectedObjects.indexOf(t.group);
+        if (si >= 0) outlinePass.selectedObjects.splice(si, 1);
+      });
+      treePool.length = 0;
+      const n = Math.min(treeCount, treeSpots.length);
+      for (let i = 0; i < n; i++) {
+        const s = treeSpots[i];
+        const t = treeBuilders[i % treeBuilders.length]();
+        t.position.set(s[0], 0, s[1]);
+        t.rotation.y = randRange(0, Math.PI * 2);
+        t.scale.setScalar(treeScaleVal);
+        scene.add(t);
+        outlinePass.selectedObjects.push(t);
+        const obstacle = { x: s[0], z: s[1], radius: 1.4 };
+        obstacles.push(obstacle);
+        treePool.push({ group: t, obstacle: obstacle });
+      }
+    }
+    rebuildTrees();
 
     // Bushes sprinkled between the trees (decorative — no collision).
     const bushSpots = [[-25, 8], [4, -18], [22, -4], [-15, -22], [30, 18], [0, 16]];
@@ -523,7 +569,9 @@
 
     // Animation actions + current state (assigned once the GLB loads).
     let idleAction = null, tiredAction = null, walkAction = null, runAction = null;
-    let currentAnim = null;
+    let currentAction = null;
+    let desiredAnim = null;
+    let blendTime = 0.25;      // animation crossfade duration (dev-tunable)
     let sagaHips = null;       // hips bone — its baked translation is root motion
     let sagaMatLogged = false; // log the embedded material type once
 
@@ -593,7 +641,8 @@
           idleAction.reset();
           idleAction.setEffectiveWeight(1);
           idleAction.play();
-          currentAnim = idleAction;
+          currentAction = idleAction;
+          desiredAnim = idleAction;
         }
       },
       undefined,
@@ -602,26 +651,39 @@
       }
     );
 
-    // Explicit weight-based transition: bring the next action in from weight 0
-    // and cross-fade the current one out over 0.25s.
+    // Explicit weight-based transition: first action snaps to full weight,
+    // later ones fade in from 0. Only ever called when the state changes.
     function switchAnim(nextAction) {
-      if (!nextAction || nextAction === currentAnim) return;
-      nextAction.reset();
-      nextAction.setEffectiveWeight(0);
-      nextAction.play();
-      if (currentAnim) currentAnim.crossFadeTo(nextAction, 0.25, false);
-      currentAnim = nextAction;
+      if (!nextAction) return;
+      if (nextAction === currentAction) return;
+      if (currentAction) {
+        nextAction.reset();
+        nextAction.setEffectiveWeight(0);
+        nextAction.play();
+        currentAction.crossFadeTo(nextAction, blendTime, false);
+      } else {
+        nextAction.reset();
+        nextAction.setEffectiveWeight(1);
+        nextAction.play();
+      }
+      currentAction = nextAction;
     }
 
-    // Pick the locomotion state from speed + hearts collected. Called every
-    // frame and again the instant a heart is collected.
+    // Pick the locomotion state from speed + hearts collected, and only fire a
+    // transition when the desired state actually changes (avoids re-reset every
+    // frame, which froze the clip on its first frame).
     function evaluateAnimState() {
       if (!mixer) return;
       const hs = Math.sqrt(sagaVel.x * sagaVel.x + sagaVel.z * sagaVel.z);
-      if (hs < 0.02) switchAnim(idleAction);        // standing still
-      else if (collected < 3) switchAnim(tiredAction); // 0-2 hearts
-      else if (collected < 5) switchAnim(walkAction);  // 3-4 hearts
-      else switchAnim(runAction);                      // 5+ hearts
+      let nextDesired;
+      if (hs < 0.02) nextDesired = idleAction;          // standing still
+      else if (collected < 3) nextDesired = tiredAction; // 0-2 hearts
+      else if (collected < 5) nextDesired = walkAction;  // 3-4 hearts
+      else nextDesired = runAction;                      // 5+ hearts
+      if (nextDesired !== desiredAnim) {
+        desiredAnim = nextDesired;
+        switchAnim(desiredAnim);
+      }
     }
 
     // ----------------------------------------------------------------------
@@ -677,8 +739,8 @@
     // Camera control
     // ----------------------------------------------------------------------
     let camAzimuth = Math.PI;     // around Saga
-    const camPitch = 0.42;        // fixed-ish elevation
-    let camDist = 9;
+    let camHeight = 8;            // height above Saga (dev-tunable)
+    let camDistance = 12;         // distance behind Saga (dev-tunable)
     let dragging = false;
 
     canvas.addEventListener("mousedown", function () { dragging = true; });
@@ -934,7 +996,7 @@
       health = Math.min(MAX_HEALTH, health + HEART_VALUE);
       updateHeartsUI();
       updateCount();
-      chime();
+      if (sfxEnabled) chime();
       scheduleHeartbeat(); // re-evaluate beep interval / ambient threshold
       evaluateAnimState(); // health changed → maybe unlock walk/run now
 
@@ -1029,7 +1091,7 @@
       const healthFrac = health / MAX_HEALTH;          // 0.1 .. 1.0
       // movement speed scales with heart progression: tired / walk / run
       const heartSpeedMul = collected >= 5 ? 1.5 : (collected >= 3 ? 1.0 : 0.7);
-      const speed = BASE_MOVE_SPEED * heartSpeedMul;   // units/sec
+      const speed = baseMoveSpeed * heartSpeedMul;     // units/sec
 
       // --- input -> desired direction (camera relative) ---
       let ix = 0, iz = 0;
@@ -1099,11 +1161,11 @@
       // --- animation: pick state, then match playback to real movement speed ---
       const horizSpeed = Math.sqrt(sagaVel.x * sagaVel.x + sagaVel.z * sagaVel.z);
       evaluateAnimState();
-      if (currentAnim) {
+      if (currentAction) {
         // Locomotion playback tracks ground speed so the feet match the floor.
         // Idle keeps steady playback (horizSpeed 0 would otherwise freeze it).
-        currentAnim.setEffectiveTimeScale(
-          currentAnim === idleAction ? 1.0 : horizSpeed * 0.55
+        currentAction.setEffectiveTimeScale(
+          currentAction === idleAction ? 1.0 : horizSpeed * 0.55
         );
       }
 
@@ -1133,12 +1195,11 @@
 
       // --- camera follow (smooth) ---
       const targetY = 1.3;
-      const offX = Math.sin(camAzimuth) * camDist * Math.cos(camPitch);
-      const offZ = Math.cos(camAzimuth) * camDist * Math.cos(camPitch);
-      const offY = camDist * Math.sin(camPitch) + 2.2;
+      const offX = Math.sin(camAzimuth) * camDistance;
+      const offZ = Math.cos(camAzimuth) * camDistance;
       const desired = new THREE.Vector3(
         saga.position.x + offX,
-        saga.position.y + offY,
+        saga.position.y + camHeight,
         saga.position.z + offZ
       );
       camera.position.lerp(desired, Math.min(1, 4 * dt));
@@ -1156,6 +1217,92 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
       resizePostFX();
     });
+
+    // ----------------------------------------------------------------------
+    // Developer panel — collapsible live controls (top-left, default collapsed)
+    // ----------------------------------------------------------------------
+    function buildDevPanel() {
+      const panel = document.createElement("div");
+      panel.id = "devPanel";
+      const toggle = document.createElement("button");
+      toggle.id = "devToggle";
+      toggle.textContent = "⚙";
+      toggle.title = "Developer panel";
+      const body = document.createElement("div");
+      body.className = "dev-body";
+      toggle.addEventListener("click", function () { panel.classList.toggle("open"); });
+      panel.appendChild(toggle);
+      panel.appendChild(body);
+
+      function header(text) {
+        const h = document.createElement("div");
+        h.className = "dev-header"; h.textContent = text; body.appendChild(h);
+      }
+      function row(label) {
+        const r = document.createElement("div");
+        r.className = "dev-row";
+        const l = document.createElement("label"); l.textContent = label;
+        r.appendChild(l); body.appendChild(r); return r;
+      }
+      function slider(label, min, max, step, val, fn) {
+        const r = row(label);
+        const inp = document.createElement("input");
+        inp.type = "range"; inp.min = min; inp.max = max; inp.step = step; inp.value = val;
+        const out = document.createElement("span");
+        out.className = "dev-val"; out.textContent = val;
+        inp.addEventListener("input", function () {
+          const v = parseFloat(inp.value); out.textContent = v; fn(v);
+        });
+        r.appendChild(inp); r.appendChild(out);
+      }
+      function color(label, val, fn) {
+        const r = row(label);
+        const inp = document.createElement("input");
+        inp.type = "color"; inp.value = val;
+        inp.addEventListener("input", function () { fn(inp.value); });
+        r.appendChild(inp);
+      }
+      function checkbox(label, val, fn) {
+        const r = row(label);
+        const inp = document.createElement("input");
+        inp.type = "checkbox"; inp.checked = val;
+        inp.addEventListener("change", function () { fn(inp.checked); });
+        r.appendChild(inp);
+      }
+
+      header("CAMERA");
+      slider("FOV", 30, 90, 1, 60, function (v) { camera.fov = v; camera.updateProjectionMatrix(); });
+      slider("Height", 4, 20, 0.5, camHeight, function (v) { camHeight = v; });
+      slider("Distance", 6, 25, 0.5, camDistance, function (v) { camDistance = v; });
+
+      header("LIGHTING");
+      slider("Ambient", 0, 2, 0.05, ambient.intensity, function (v) { ambient.intensity = v; });
+      slider("Sun", 0, 2, 0.05, dir.intensity, function (v) { dir.intensity = v; });
+      slider("Fog", 0, 0.05, 0.001, scene.fog.density, function (v) { scene.fog.density = v; });
+
+      header("COLORS");
+      color("Sky horizon", "#87ceeb", function (h) { skyMat.uniforms.horizonColor.value.set(h); });
+      color("Sky top", "#4a90d9", function (h) { skyMat.uniforms.topColor.value.set(h); });
+      color("Ground", "#7ab648", function (h) { ground.material.color.set(h); });
+
+      header("TERRAIN");
+      slider("Ground size", 60, 300, 5, 270, function (v) {
+        const s = v / (WORLD_SIZE * 3); ground.scale.set(s, s, 1);
+      });
+      slider("Tree scale", 1, 6, 0.1, treeScaleVal, function (v) { treeScaleVal = v; rebuildTrees(); });
+      slider("Trees", 4, 20, 1, treeCount, function (v) { treeCount = v; rebuildTrees(); });
+
+      header("AUDIO");
+      checkbox("Sound effects", sfxEnabled, function (b) { sfxEnabled = b; });
+      checkbox("Ambient music", musicEnabled, function (b) { musicEnabled = b; });
+
+      header("MOVEMENT");
+      slider("Move speed", 1, 15, 0.1, baseMoveSpeed, function (v) { baseMoveSpeed = v; });
+      slider("Blend time", 0.1, 1.0, 0.05, blendTime, function (v) { blendTime = v; });
+
+      document.body.appendChild(panel);
+    }
+    buildDevPanel();
 
     // ----------------------------------------------------------------------
     // Init
