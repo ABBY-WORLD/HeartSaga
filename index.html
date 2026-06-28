@@ -590,6 +590,8 @@
           if (a) a.setLoop(THREE.LoopRepeat, Infinity);
         });
         if (idleAction) {
+          idleAction.reset();
+          idleAction.setEffectiveWeight(1);
           idleAction.play();
           currentAnim = idleAction;
         }
@@ -600,28 +602,26 @@
       }
     );
 
-    // Choose the animation state from current speed AND health, then crossfade.
-    // Health gates the locomotion: below 0.4 she can only manage the tired
-    // shuffle; walk unlocks at >=0.4, run at >=0.7. Called every frame and
-    // again the instant a heart is collected (health changes).
+    // Explicit weight-based transition: bring the next action in from weight 0
+    // and cross-fade the current one out over 0.25s.
+    function switchAnim(nextAction) {
+      if (!nextAction || nextAction === currentAnim) return;
+      nextAction.reset();
+      nextAction.setEffectiveWeight(0);
+      nextAction.play();
+      if (currentAnim) currentAnim.crossFadeTo(nextAction, 0.25, false);
+      currentAnim = nextAction;
+    }
+
+    // Pick the locomotion state from speed + hearts collected. Called every
+    // frame and again the instant a heart is collected.
     function evaluateAnimState() {
       if (!mixer) return;
       const hs = Math.sqrt(sagaVel.x * sagaVel.x + sagaVel.z * sagaVel.z);
-      // Locomotion clip is gated by hearts collected; idle when standing still.
-      let next;
-      if (hs < 0.02) next = idleAction;            // standing still
-      else if (collected <= 2) next = tiredAction; // 0-2 hearts
-      else if (collected <= 4) next = walkAction;  // 3-4 hearts
-      else next = runAction;                       // 5+ hearts
-      if (next && next !== currentAnim) {
-        // Start the incoming action, then cross-fade weights (warp=true to
-        // smooth the step-speed difference).
-        next.enabled = true;
-        next.setEffectiveWeight(1);
-        next.play();
-        if (currentAnim) currentAnim.crossFadeTo(next, 0.3, true);
-        currentAnim = next;
-      }
+      if (hs < 0.02) switchAnim(idleAction);        // standing still
+      else if (collected < 3) switchAnim(tiredAction); // 0-2 hearts
+      else if (collected < 5) switchAnim(walkAction);  // 3-4 hearts
+      else switchAnim(runAction);                      // 5+ hearts
     }
 
     // ----------------------------------------------------------------------
