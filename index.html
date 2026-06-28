@@ -576,10 +576,12 @@
           const c = gltf.animations.find(function (a) { return re.test(a.name); });
           return c ? mixer.clipAction(c) : null;
         };
-        idleAction = findAction(/^idle/i);
-        tiredAction = findAction(/tired/i);
-        walkAction = findAction(/walk/i);
-        runAction = findAction(/^running_/i); // "Running_*" but not "Running Tired"
+        // Match by name prefix — the GLB suffixes clips (e.g. "Idle_3",
+        // "Walking (1)_1"), so exact-name lookups would miss.
+        idleAction = findAction(/^idle/i);          // "Idle"
+        tiredAction = findAction(/injured/i);       // "Injured Walking"
+        walkAction = findAction(/^walking/i);       // "Walking" (not "Injured Walking")
+        runAction = findAction(/^running/i);        // "Running"
 
         // Use the clips exactly as they come from the GLB; loop them all.
         // (The "Running Tired" clip has a bad loop point baked into the Mixamo
