@@ -137,19 +137,21 @@
 
   /* Developer panel */
   #devPanel {
-    position: fixed; top: 8px; left: 8px; z-index: 1000; width: 240px;
     font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    font-size: 11px; color: #fff; pointer-events: none;
+    color: #fff; pointer-events: none;
   }
+  /* Toggle button — always visible, top-left, above everything */
   #devToggle {
-    width: 28px; height: 28px; border: none; border-radius: 4px;
-    background: rgba(0,0,0,0.75); color: #fff; font-size: 15px;
-    cursor: pointer; pointer-events: auto; line-height: 28px; padding: 0;
+    position: fixed; top: 10px; left: 10px; z-index: 9999;
+    background: rgba(0,0,0,0.7); color: #fff; padding: 6px 10px;
+    border: none; border-radius: 4px; font-size: 14px; line-height: 1;
+    cursor: pointer; pointer-events: auto;
   }
   #devPanel .dev-body {
-    display: none; margin-top: 6px; padding: 8px 10px; pointer-events: auto;
-    background: rgba(0,0,0,0.75); border-radius: 6px;
-    max-height: 85vh; overflow-y: auto;
+    position: fixed; top: 46px; left: 10px; z-index: 9999; width: 240px;
+    display: none; padding: 8px 10px; pointer-events: auto;
+    background: rgba(0,0,0,0.78); border-radius: 6px;
+    max-height: 82vh; overflow-y: auto; font-size: 11px;
   }
   #devPanel.open .dev-body { display: block; }
   #devPanel .dev-header {
@@ -159,6 +161,11 @@
   #devPanel .dev-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
   #devPanel .dev-row label { flex: 0 0 76px; opacity: 0.85; }
   #devPanel .dev-row input[type="range"] { flex: 1; min-width: 0; }
+  #devPanel .dev-row button {
+    flex: 1; background: rgba(255,255,255,0.12); color: #fff;
+    border: 1px solid rgba(255,255,255,0.25); border-radius: 4px;
+    padding: 4px 6px; cursor: pointer; font-size: 11px;
+  }
   #devPanel .dev-val { flex: 0 0 32px; text-align: right; opacity: 0.7; }
 </style>
 </head>
@@ -570,7 +577,7 @@
     // Animation actions + current state (assigned once the GLB loads).
     let idleAction = null, tiredAction = null, walkAction = null, runAction = null;
     let currentAction = null;
-    let desiredAnim = null;
+    let currentAnimName = "";  // compared by string to avoid re-triggering
     let blendTime = 0.25;      // animation crossfade duration (dev-tunable)
     let sagaHips = null;       // hips bone — its baked translation is root motion
     let sagaMatLogged = false; // log the embedded material type once
@@ -642,7 +649,7 @@
           idleAction.setEffectiveWeight(1);
           idleAction.play();
           currentAction = idleAction;
-          desiredAnim = idleAction;
+          currentAnimName = "idle";
         }
       },
       undefined,
@@ -651,39 +658,29 @@
       }
     );
 
-    // Explicit weight-based transition: first action snaps to full weight,
-    // later ones fade in from 0. Only ever called when the state changes.
-    function switchAnim(nextAction) {
-      if (!nextAction) return;
-      if (nextAction === currentAction) return;
-      if (currentAction) {
-        nextAction.reset();
-        nextAction.setEffectiveWeight(0);
-        nextAction.play();
-        currentAction.crossFadeTo(nextAction, blendTime, false);
+    // Transition by NAME — guard on the string so re-calls with the same state
+    // are no-ops (comparing by name is bulletproof vs. object identity).
+    function switchAnim(action, name) {
+      if (!action || name === currentAnimName) return;
+      currentAnimName = name;
+      if (currentAction && currentAction !== action) {
+        action.reset().setEffectiveWeight(1).play();
+        currentAction.crossFadeTo(action, blendTime, false);
       } else {
-        nextAction.reset();
-        nextAction.setEffectiveWeight(1);
-        nextAction.play();
+        action.reset().setEffectiveWeight(1).play();
       }
-      currentAction = nextAction;
+      currentAction = action;
     }
 
-    // Pick the locomotion state from speed + hearts collected, and only fire a
-    // transition when the desired state actually changes (avoids re-reset every
-    // frame, which froze the clip on its first frame).
+    // Pick the locomotion state from speed + hearts collected. Called every
+    // frame and on heart collect; switchAnim's name guard prevents re-triggers.
     function evaluateAnimState() {
       if (!mixer) return;
       const hs = Math.sqrt(sagaVel.x * sagaVel.x + sagaVel.z * sagaVel.z);
-      let nextDesired;
-      if (hs < 0.02) nextDesired = idleAction;          // standing still
-      else if (collected < 3) nextDesired = tiredAction; // 0-2 hearts
-      else if (collected < 5) nextDesired = walkAction;  // 3-4 hearts
-      else nextDesired = runAction;                      // 5+ hearts
-      if (nextDesired !== desiredAnim) {
-        desiredAnim = nextDesired;
-        switchAnim(desiredAnim);
-      }
+      if (hs < 0.02) switchAnim(idleAction, "idle");        // standing still
+      else if (collected < 3) switchAnim(tiredAction, "tired"); // 0-2 hearts
+      else if (collected < 5) switchAnim(walkAction, "walk");   // 3-4 hearts
+      else switchAnim(runAction, "run");                        // 5+ hearts
     }
 
     // ----------------------------------------------------------------------
@@ -889,7 +886,7 @@
       });
     }
 
-    // collect chime — two quick ascending tones
+    // collect chime — two quick ascending tones (softer, lower, shorter)
     function chime() {
       if (!actx) return;
       const t = actx.currentTime;
@@ -897,15 +894,15 @@
         const osc = actx.createOscillator();
         const g = actx.createGain();
         osc.type = "triangle";
-        osc.frequency.value = i === 0 ? 660 : 990;
-        const start = t + i * 0.09;
+        osc.frequency.value = (i === 0 ? 660 : 990) * 0.7; // 30% lower pitch
+        const start = t + i * 0.07;
         g.gain.setValueAtTime(0, start);
-        g.gain.linearRampToValueAtTime(0.18, start + 0.02);
-        g.gain.exponentialRampToValueAtTime(0.0001, start + 0.35);
+        g.gain.linearRampToValueAtTime(0.12, start + 0.02); // softer
+        g.gain.exponentialRampToValueAtTime(0.0001, start + 0.28);
         osc.connect(g);
         g.connect(masterGain);
         osc.start(start);
-        osc.stop(start + 0.4);
+        osc.stop(start + 0.3); // cut off after ~0.3s
       });
     }
 
@@ -1293,7 +1290,15 @@
       slider("Trees", 4, 20, 1, treeCount, function (v) { treeCount = v; rebuildTrees(); });
 
       header("AUDIO");
-      checkbox("Sound effects", sfxEnabled, function (b) { sfxEnabled = b; });
+      // 💓 heart-sound toggle button
+      const sfxRow = row("");
+      const sfxBtn = document.createElement("button");
+      const sfxLabel = function () { return "💓 Hjärtljud: " + (sfxEnabled ? "PÅ" : "AV"); };
+      sfxBtn.textContent = sfxLabel();
+      sfxBtn.addEventListener("click", function () {
+        sfxEnabled = !sfxEnabled; sfxBtn.textContent = sfxLabel();
+      });
+      sfxRow.appendChild(sfxBtn);
       checkbox("Ambient music", musicEnabled, function (b) { musicEnabled = b; });
 
       header("MOVEMENT");
