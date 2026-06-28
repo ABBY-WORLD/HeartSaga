@@ -552,9 +552,11 @@
           }
         });
 
-        // Drop her so her feet rest on the ground (bbox bottom -> y = 0).
+        // Drop her so her feet rest on the ground (bbox bottom -> y = 0),
+        // with a small extra nudge for the Mixamo armature offset.
         const box = new THREE.Box3().setFromObject(model);
-        model.position.y = -box.min.y;
+        console.log("[saga] bbox min.y:", box.min.y, "max.y:", box.max.y);
+        model.position.y = -box.min.y - 0.1;
 
         // Capture the hips' rest X/Z so we can cancel baked root motion each frame.
         if (sagaHips) {
@@ -579,18 +581,13 @@
         walkAction = findAction(/walk/i);
         runAction = findAction(/^running_/i); // "Running_*" but not "Running Tired"
 
-        // Play every action up front at weight 0 and let crossFadeTo ramp the
-        // weights. Each clip keeps looping on its own phase, so transitions
-        // never restart a cycle mid-step (that restart was the hitch).
+        // Loop mode on all clips, but only idle plays at load — the other
+        // actions are started lazily when first crossfaded to.
         [idleAction, tiredAction, walkAction, runAction].forEach(function (a) {
-          if (a) {
-            a.setLoop(THREE.LoopRepeat, Infinity);
-            a.play();
-            a.setEffectiveWeight(0);
-          }
+          if (a) a.setLoop(THREE.LoopRepeat, Infinity);
         });
         if (idleAction) {
-          idleAction.setEffectiveWeight(1);
+          idleAction.play();
           currentAnim = idleAction;
         }
       },
@@ -614,8 +611,11 @@
       else if (collected <= 4) next = walkAction;  // 3-4 hearts
       else next = runAction;                       // 5+ hearts
       if (next && next !== currentAnim) {
-        // Both actions are already playing — just cross-fade their weights,
-        // warping (true) to smooth the step-speed difference. No reset/sync.
+        // Start the incoming action, then cross-fade weights (warp=true to
+        // smooth the step-speed difference).
+        next.enabled = true;
+        next.setEffectiveWeight(1);
+        next.play();
         if (currentAnim) currentAnim.crossFadeTo(next, 0.3, true);
         currentAnim = next;
       }
