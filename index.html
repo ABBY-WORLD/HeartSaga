@@ -564,12 +564,6 @@
         console.log("[saga] bbox min.y:", box.min.y, "max.y:", box.max.y);
         model.position.y = -box.min.y - 0.1;
 
-        // Capture the hips' rest X/Z so we can cancel baked root motion each frame.
-        if (sagaHips) {
-          sagaHips.userData.bx = sagaHips.position.x;
-          sagaHips.userData.bz = sagaHips.position.z;
-        }
-
         saga.add(model);
         outlinePass.selectedObjects.push(model);
 
@@ -583,26 +577,13 @@
           return c ? mixer.clipAction(c) : null;
         };
         idleAction = findAction(/^idle/i);
+        tiredAction = findAction(/tired/i);
         walkAction = findAction(/walk/i);
         runAction = findAction(/^running_/i); // "Running_*" but not "Running Tired"
 
-        // The tired clip pops at its loop point — a Mixamo duplicate first/last
-        // frame. Trim exactly one frame off each end with a subclip so it loops
-        // on clean keyframes.
-        const tiredClip = gltf.animations.find(function (a) { return /tired/i.test(a.name); });
-        if (tiredClip) {
-          console.log("tired clip duration:", tiredClip.duration);
-          const fps = 30;
-          const endFrame = Math.round(tiredClip.duration * fps) - 1;
-          const trimmedTired = THREE.AnimationUtils.subclip(
-            tiredClip, tiredClip.name, 1, endFrame, fps
-          );
-          tiredAction = mixer.clipAction(trimmedTired);
-          tiredAction.clampWhenFinished = false;
-        }
-
-        // Loop mode on all clips, but only idle plays at load — the other
-        // actions are started lazily when first crossfaded to.
+        // Use the clips exactly as they come from the GLB; loop them all.
+        // (The "Running Tired" clip has a bad loop point baked into the Mixamo
+        // animation — accepted for now until the clip itself is replaced.)
         [idleAction, tiredAction, walkAction, runAction].forEach(function (a) {
           if (a) a.setLoop(THREE.LoopRepeat, Infinity);
         });
@@ -1039,8 +1020,8 @@
       // cancel baked-in root motion: pin the hips' horizontal translation,
       // keep its vertical (bob). Movement is driven by game logic, not the clip.
       if (sagaHips) {
-        sagaHips.position.x = sagaHips.userData.bx;
-        sagaHips.position.z = sagaHips.userData.bz;
+        sagaHips.position.x = 0;
+        sagaHips.position.z = 0;
       }
 
       const healthFrac = health / MAX_HEALTH;          // 0.1 .. 1.0
@@ -1117,12 +1098,11 @@
       const horizSpeed = Math.sqrt(sagaVel.x * sagaVel.x + sagaVel.z * sagaVel.z);
       evaluateAnimState();
       if (currentAnim) {
-        // Locomotion playback tracks ground speed so the feet match the floor
-        // (tune 0.7). Idle keeps steady playback — speed 0 would freeze it.
-        // Tired plays a touch slower (×0.85) to further mask its loop pop.
-        let ts = currentAnim === idleAction ? 1.0 : Math.max(0.1, horizSpeed * 0.7);
-        if (currentAnim === tiredAction) ts *= 0.85;
-        currentAnim.setEffectiveTimeScale(ts);
+        // Locomotion playback tracks ground speed so the feet match the floor.
+        // Idle keeps steady playback (horizSpeed 0 would otherwise freeze it).
+        currentAnim.setEffectiveTimeScale(
+          currentAnim === idleAction ? 1.0 : horizSpeed * 0.55
+        );
       }
 
       // --- donation hearts float + spin, proximity collect ---
