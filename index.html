@@ -7,7 +7,7 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1a2e; }
-  #scene { position: fixed; inset: 0; display: block; }
+  #scene { position: fixed; inset: 0; display: block; touch-action: none; }
 
   /* Health UI — top left, Zelda-style row of hearts */
   #hearts {
@@ -683,6 +683,41 @@
     });
 
     // ----------------------------------------------------------------------
+    // Touch control (mobile) — tap/hold anywhere to walk toward that point
+    // ----------------------------------------------------------------------
+    let isTouching = false;
+    let touchX = 0, touchY = 0;
+    const touchRay = new THREE.Raycaster();
+    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const touchNdc = new THREE.Vector2();
+    const touchHit = new THREE.Vector3();
+
+    function onTouch(e) {
+      e.preventDefault();
+      if (e.touches.length > 0) {
+        touchX = e.touches[0].clientX;
+        touchY = e.touches[0].clientY;
+        isTouching = true;
+      }
+    }
+    function onTouchEnd(e) {
+      e.preventDefault();
+      isTouching = false;
+    }
+    canvas.addEventListener("touchstart", onTouch, { passive: false });
+    canvas.addEventListener("touchmove", onTouch, { passive: false });
+    canvas.addEventListener("touchend", onTouchEnd, { passive: false });
+    canvas.addEventListener("touchcancel", onTouchEnd, { passive: false });
+
+    // Project the current touch point onto the ground plane (y = 0).
+    function touchToGround() {
+      touchNdc.x = (touchX / window.innerWidth) * 2 - 1;
+      touchNdc.y = -(touchY / window.innerHeight) * 2 + 1;
+      touchRay.setFromCamera(touchNdc, camera);
+      return touchRay.ray.intersectPlane(groundPlane, touchHit) ? touchHit : null;
+    }
+
+    // ----------------------------------------------------------------------
     // Audio — Web Audio API
     // ----------------------------------------------------------------------
     let actx = null;
@@ -997,7 +1032,10 @@
         if (keys["KeyD"] || keys["ArrowRight"]) ix += 1;
       }
 
+      // Resolve a world-space move direction from WASD (camera-relative) or,
+      // if no keys are held, from a held touch (walk toward the touched point).
       let moving = false;
+      let mx = 0, mz = 0;
       if (ix !== 0 || iz !== 0) {
         moving = true;
         // camera forward / right on the ground plane
@@ -1005,11 +1043,24 @@
         // forward is direction camera looks toward Saga -> -camera offset
         const fwdX = -sin, fwdZ = -cos;
         const rightX = cos, rightZ = -sin;
-        let mx = fwdX * (-iz) + rightX * ix;
-        let mz = fwdZ * (-iz) + rightZ * ix;
+        mx = fwdX * (-iz) + rightX * ix;
+        mz = fwdZ * (-iz) + rightZ * ix;
         const len = Math.sqrt(mx * mx + mz * mz) || 1;
         mx /= len; mz /= len;
+      } else if (isTouching && started && !won) {
+        const target = touchToGround();
+        if (target) {
+          const dx = target.x - saga.position.x;
+          const dz = target.z - saga.position.z;
+          const dist = Math.sqrt(dx * dx + dz * dz);
+          if (dist > 0.5) {           // far enough away -> move toward it
+            moving = true;
+            mx = dx / dist; mz = dz / dist;
+          }                            // within 0.5 -> arrived, stop
+        }
+      }
 
+      if (moving) {
         // heavy acceleration when weak (sluggish feel), snappier when strong
         const accel = 6 + healthFrac * 16;
         sagaVel.x += (mx * speed - sagaVel.x) * Math.min(1, accel * dt);
