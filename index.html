@@ -507,6 +507,12 @@
     sagaGlow.position.set(0, 1.2, 0);
     saga.add(sagaGlow);
 
+    // dedicated fill light for the character (kept moderate — the real cause
+    // of the "black" model was missing normals, fixed at load via
+    // computeVertexNormals; this just guarantees she's well lit)
+    const sagaLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.5);
+    saga.add(sagaLight);
+
     // ----------------------------------------------------------------------
     // Saga — animated GLB character (merged-model.glb)
     // ----------------------------------------------------------------------
@@ -518,6 +524,8 @@
     // Animation actions + current state (assigned once the GLB loads).
     let idleAction = null, tiredAction = null, walkAction = null, runAction = null;
     let currentAnim = null;
+    let sagaHips = null;       // hips bone — its baked translation is root motion
+    let sagaMatLogged = false; // log the embedded material type once
 
     const gltfLoader = new GLTFLoader();
     gltfLoader.load(
@@ -527,14 +535,25 @@
         model.scale.setScalar(MODEL_SCALE);
         model.rotation.y = MODEL_FACING_OFFSET;
         model.traverse(function (o) {
+          if (o.name === "mixamorigHips") sagaHips = o; // for root-motion removal
           if (o.isMesh) {
             o.castShadow = true;
             o.frustumCulled = false; // skinned meshes can be wrongly culled
+            // ROOT CAUSE of the black render: the GLB has no vertex normals,
+            // so any lit material shades to black. Compute them.
+            const hadNormals = !!o.geometry.attributes.normal;
+            if (!hadNormals) o.geometry.computeVertexNormals();
             const src = o.material;
-            // Lambert responds to scene lights (toon was rendering unlit/black).
+            if (!sagaMatLogged) {
+              console.log("[saga] embedded material:", src && src.type,
+                "| map:", !!(src && src.map), "| hadNormals:", hadNormals);
+              sagaMatLogged = true;
+            }
+            // Lambert + the GLB texture; now lit because normals exist.
             o.material = (src && src.map)
               ? new THREE.MeshLambertMaterial({ map: src.map })
               : new THREE.MeshLambertMaterial({ color: (src && src.color) ? src.color : 0xffffff });
+            o.material.side = THREE.FrontSide;
             if (src && src.dispose) src.dispose();
           }
         });
@@ -542,6 +561,12 @@
         // Drop her so her feet rest on the ground (bbox bottom -> y = 0).
         const box = new THREE.Box3().setFromObject(model);
         model.position.y = -box.min.y;
+
+        // Capture the hips' rest X/Z so we can cancel baked root motion each frame.
+        if (sagaHips) {
+          sagaHips.userData.bx = sagaHips.position.x;
+          sagaHips.userData.bz = sagaHips.position.z;
+        }
 
         saga.add(model);
         outlinePass.selectedObjects.push(model);
@@ -570,6 +595,27 @@
         console.error("Could not load merged-model.glb:", err);
       }
     );
+
+    // Choose the animation state from current speed AND health, then crossfade.
+    // Health gates the locomotion: below 0.4 she can only manage the tired
+    // shuffle; walk unlocks at >=0.4, run at >=0.7. Called every frame and
+    // again the instant a heart is collected (health changes).
+    function evaluateAnimState() {
+      if (!mixer) return;
+      const hs = Math.sqrt(sagaVel.x * sagaVel.x + sagaVel.z * sagaVel.z);
+      const hf = health / MAX_HEALTH;
+      let next;
+      if (hs === 0) next = idleAction;
+      else if (hf < 0.4) next = tiredAction;          // too weak to walk/run
+      else if (hs <= 3) next = tiredAction;
+      else if (hs <= 8) next = walkAction;            // walk unlocked >= 0.4
+      else next = (hf >= 0.7) ? runAction : walkAction; // run unlocked >= 0.7
+      if (next && next !== currentAnim) {
+        next.reset().play();
+        if (currentAnim) currentAnim.crossFadeTo(next, 0.2, false);
+        currentAnim = next;
+      }
+    }
 
     // ----------------------------------------------------------------------
     // Donation hearts
@@ -848,6 +894,7 @@
       updateCount();
       chime();
       scheduleHeartbeat(); // re-evaluate beep interval / ambient threshold
+      evaluateAnimState(); // health changed → maybe unlock walk/run now
 
       if (collected >= TOTAL_HEARTS) triggerWin();
     }
@@ -930,6 +977,12 @@
 
       const delta = clock.getDelta();
       if (mixer) mixer.update(delta);
+      // cancel baked-in root motion: pin the hips' horizontal translation,
+      // keep its vertical (bob). Movement is driven by game logic, not the clip.
+      if (sagaHips) {
+        sagaHips.position.x = sagaHips.userData.bx;
+        sagaHips.position.z = sagaHips.userData.bz;
+      }
 
       const healthFrac = health / MAX_HEALTH;          // 0.1 .. 1.0
       // speed scales with health: slow & heavy when weak, free when strong
@@ -984,20 +1037,12 @@
       while (da < -Math.PI) da += Math.PI * 2;
       saga.rotation.y += da * Math.min(1, 10 * dt);
 
-      // --- animation state machine (speed-driven, crossfaded) ---
+      // --- animation: pick state, then match playback to real movement speed ---
       const horizSpeed = Math.sqrt(sagaVel.x * sagaVel.x + sagaVel.z * sagaVel.z);
-      if (mixer) {
-        mixer.timeScale = Math.max(0.35, healthFrac); // weak = slower motion
-        let next;
-        if (horizSpeed === 0) next = idleAction;
-        else if (horizSpeed <= 3) next = tiredAction;
-        else if (horizSpeed <= 8) next = walkAction;
-        else next = runAction;
-        if (next && next !== currentAnim) {
-          next.reset().play();
-          if (currentAnim) currentAnim.crossFadeTo(next, 0.2, false);
-          currentAnim = next;
-        }
+      evaluateAnimState();
+      if (currentAnim) {
+        const animSpeed = Math.max(0.3, horizSpeed / 5.0);
+        currentAnim.setEffectiveTimeScale(animSpeed * healthFrac);
       }
 
       // --- donation hearts float + spin, proximity collect ---
